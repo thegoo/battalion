@@ -1,0 +1,66 @@
+{
+  "mission_id": "M-001",
+  "mission_prompt": "Build JWT authentication for a FastAPI application.",
+  "generated_by": "mission_analyst",
+  "requirements": [
+    {
+      "id": "R-001",
+      "statement": "Validate JWT issuer",
+      "status": "completed",
+      "owner": "developer",
+      "evidence": [".battalion/reports/issuer-validation-evidence.md"],
+      "risks": [],
+      "assumptions": ["Issuer value is configured per environment"],
+      "acceptance": ["Tokens from unknown issuers are rejected"],
+      "required_reviews": [
+        {"reviewer": "architect", "status": "completed", "reason": "Validate the authentication design and system boundaries."},
+        {"reviewer": "secops", "status": "completed", "reason": "Validate issuer checks and authentication threat controls."},
+        {"reviewer": "tester", "status": "completed", "reason": "Validate issuer rejection behavior with evidence."}
+      ],
+      "traceability": {
+        "source": "mission_prompt",
+        "prompt_excerpt": "Build JWT authentication for a FastAPI application.",
+        "rationale": "JWT authentication requires validation of the trusted token issuer.",
+        "constraint_ids": ["FC-001", "TC-001", "SC-001"]
+      }
+    }
+  ],
+  "constraints": {
+    "functional": [
+      {"id": "FC-001", "statement": "JWT authentication is required.", "prompt_excerpt": "Build JWT authentication for a FastAPI application."}
+    ],
+    "technical": [
+      {"id": "TC-001", "statement": "FastAPI is required.", "prompt_excerpt": "Build JWT authentication for a FastAPI application."}
+    ],
+    "security": [
+      {"id": "SC-001", "statement": "JWT issuer trust must be enforced.", "prompt_excerpt": "Build JWT authentication for a FastAPI application."}
+    ],
+    "testing": [],
+    "operational": []
+  },
+  "assumptions": [
+    {
+      "id": "A-001",
+      "statement": "Issuer configuration is available per environment.",
+      "traceability": {
+        "source": "mission_prompt",
+        "prompt_excerpt": "Build JWT authentication for a FastAPI application.",
+        "rationale": "Issuer configuration is a low-risk prerequisite for JWT validation.",
+        "constraint_ids": ["FC-001", "SC-001"]
+      }
+    }
+  ],
+  "risks": [
+    {
+      "id": "RISK-001",
+      "statement": "Key rotation behavior remains outside this example mission.",
+      "traceability": {
+        "source": "mission_prompt",
+        "prompt_excerpt": "Build JWT authentication for a FastAPI application.",
+        "rationale": "The prompt requires JWT authentication but does not define key rotation behavior.",
+        "constraint_ids": ["SC-001"]
+      }
+    }
+  ],
+  "clarifications": []
+}

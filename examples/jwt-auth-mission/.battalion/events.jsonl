@@ -1,0 +1,9 @@
+{"timestamp":"2026-06-23T00:00:00Z","type":"mission_initialized","actor":"battalion_cli","details":{"mission_id":"M-001"}}
+{"timestamp":"2026-06-23T00:01:00Z","type":"requirement_added","actor":"battalion_cli","details":{"requirement_id":"R-001"}}
+{"timestamp":"2026-06-23T00:02:00Z","type":"dispatch_simulated","actor":"battalion_cli","details":{"requirements":["R-001"],"reviewers":["mission_analyst","architect","secops","devops","ux","developer","tester","sre","mission_assurance"]}}
+{"timestamp":"2026-06-23T00:03:00Z","type":"assurance_completed","actor":"battalion_cli","details":{"status":"GREEN","recommendation":"GO","confidence":100}}
+{"timestamp":"2026-06-23T00:04:00Z","type":"report_generated","actor":"battalion_cli","details":{"path":".battalion/reports/mission-report.md"}}
+{"timestamp":"2026-06-23T05:03:27Z","type":"assurance_completed","actor":"battalion_cli","details":{"status":"GREEN","recommendation":"GO","confidence":100,"findings":["All requirements are in valid final states with required evidence and risk entries"]}}
+{"timestamp":"2026-06-23T05:42:05Z","type":"report_generated","actor":"battalion_cli","details":{"path":".battalion/reports/mission-report.md"}}
+{"timestamp":"2026-06-24T00:55:00Z","type":"report_generated","actor":"battalion_cli","details":{"path":".battalion/reports/mission-report.md"}}
+{"timestamp":"2026-06-24T02:16:42Z","type":"report_generated","actor":"battalion_cli","details":{"path":".battalion/reports/mission-report.md"}}

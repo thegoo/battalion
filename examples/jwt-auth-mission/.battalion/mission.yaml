@@ -1,0 +1,10 @@
+{
+  "id": "M-001",
+  "title": "Add JWT Auth",
+  "objective": "Add secure JWT authentication",
+  "mission_prompt": "Build JWT authentication for a FastAPI application.",
+  "original_prompt": "Build JWT authentication for a FastAPI application.",
+  "status": "initialized",
+  "created_at": "2026-06-23T00:00:00Z",
+  "doctrine": ["mission_first", "evidence_over_assertion", "requirement_traceability", "zero_trust", "adversarial_review", "separation_of_duties", "human_authority", "audit_everything_material"]
+}

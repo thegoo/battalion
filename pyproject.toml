@@ -1,0 +1,17 @@
+[build-system]
+# Setuptools 64+ provides PEP 660 editable installs. The upper bound retains
+# compatibility with pip 21's legacy editable-install fallback on Python 3.9.
+requires = ["setuptools>=64,<70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "battalion-cli"
+version = "0.1.4"
+description = "Deterministic constraint extraction and mission contract governance CLI"
+requires-python = ">=3.9"
+
+[project.scripts]
+battalion = "battalion.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["battalion*"]

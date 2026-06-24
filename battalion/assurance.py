@@ -1,0 +1,361 @@
+import json
+from datetime import datetime
+from pathlib import Path
+
+from .models import AssuranceResult, FINAL_STATUSES, VALID_REVIEW_STATUSES, VALID_STATUSES
+from .storage import read_yaml
+
+
+REQUIRED_FILES = ("mission.yaml", "agents.yaml", "ledger.yaml", "events.jsonl")
+REQUIRED_REQUIREMENT_FIELDS = ("id", "statement", "status", "acceptance", "evidence", "required_reviews")
+CONSTRAINT_CATEGORIES = ("functional", "technical", "security", "testing", "operational")
+VALID_CLARIFICATION_STATUSES = {"open", "resolved"}
+
+
+def _is_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_string_list(value, label, finding):
+    if not isinstance(value, list):
+        finding.append(f"{label} must be a list")
+        return []
+    for index, item in enumerate(value, 1):
+        if not _is_text(item):
+            finding.append(f"{label} entry {index} must be non-blank text")
+    return value
+
+
+def _validate_evidence_paths(workspace, requirement_id, evidence, findings):
+    project = workspace.parent.resolve()
+    for reference in evidence:
+        if not _is_text(reference):
+            continue
+        candidate = (project / reference).resolve()
+        try:
+            candidate.relative_to(project)
+        except ValueError:
+            findings.append(f"{requirement_id}: Evidence path escapes the mission project: {reference}")
+            continue
+        if not candidate.is_file():
+            findings.append(f"{requirement_id}: Evidence file does not exist: {reference}")
+
+
+def _validate_traceability(value, label, mission_prompt, constraint_ids):
+    findings = []
+    if not isinstance(value, dict):
+        return [f"{label}: Missing prompt traceability"]
+    if value.get("source") != "mission_prompt":
+        findings.append(f"{label}: Traceability source must be mission_prompt")
+    excerpt = value.get("prompt_excerpt")
+    if not _is_text(excerpt):
+        findings.append(f"{label}: Traceability prompt excerpt is missing")
+    elif not _is_text(mission_prompt) or excerpt not in mission_prompt:
+        findings.append(f"{label}: Traceability excerpt does not occur in the authoritative mission prompt")
+    if not _is_text(value.get("rationale")):
+        findings.append(f"{label}: Traceability rationale is missing")
+    linked = value.get("constraint_ids")
+    if not isinstance(linked, list) or any(not _is_text(identifier) for identifier in linked):
+        findings.append(f"{label}: Traceability constraint_ids must be a list of identifiers")
+    elif constraint_ids is not None:
+        for identifier in linked:
+            if identifier not in constraint_ids:
+                findings.append(f"{label}: Traceability references unknown constraint: {identifier}")
+    return findings
+
+
+def _validate_audit(path, mission_id):
+    findings = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return [f"Mission: Audit trail is unreadable: {exc}"]
+    if not lines:
+        return ["Mission: Audit trail contains no events", "Mission: Audit trail is missing mission_initialized event"]
+    initialized = False
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            findings.append(f"Mission: Audit event line {line_number} is blank")
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            findings.append(f"Mission: Audit event line {line_number} is invalid JSON: {exc.msg}")
+            continue
+        if not isinstance(event, dict):
+            findings.append(f"Mission: Audit event line {line_number} must be an object")
+            continue
+        for field in ("timestamp", "type", "actor"):
+            if not _is_text(event.get(field)):
+                findings.append(f"Mission: Audit event line {line_number} has invalid {field}")
+        if not isinstance(event.get("details"), dict):
+            findings.append(f"Mission: Audit event line {line_number} has invalid details")
+        if _is_text(event.get("timestamp")):
+            try:
+                datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+            except ValueError:
+                findings.append(f"Mission: Audit event line {line_number} has invalid timestamp")
+        if event.get("type") == "mission_initialized":
+            event_mission_id = event.get("details", {}).get("mission_id") if isinstance(event.get("details"), dict) else None
+            if event_mission_id == mission_id:
+                initialized = True
+            else:
+                findings.append(f"Mission: Audit initialization event on line {line_number} has the wrong mission_id")
+    if not initialized:
+        findings.append("Mission: Audit trail is missing mission_initialized event")
+    return findings
+
+
+def _validate_requirement(item, index, workspace, known_reviewers, mission_prompt=None, constraint_ids=None, require_traceability=False):
+    red, amber = [], []
+    if not isinstance(item, dict):
+        return [f"Requirement #{index}: Requirement must be an object"], amber, None
+    requirement_id = item.get("id") if _is_text(item.get("id")) else f"Requirement #{index}"
+    for field in REQUIRED_REQUIREMENT_FIELDS:
+        if field not in item:
+            red.append(f"{requirement_id}: Missing required field: {field}")
+    for field in ("id", "statement", "status"):
+        if field in item and not _is_text(item[field]):
+            red.append(f"{requirement_id}: {field} must be non-blank text")
+
+    status = item.get("status")
+    if _is_text(status) and status not in VALID_STATUSES:
+        red.append(f"{requirement_id}: Invalid status: {status}")
+
+    if "acceptance" in item:
+        acceptance = _validate_string_list(item["acceptance"], f"{requirement_id}: Acceptance criteria", red)
+        if isinstance(acceptance, list) and not acceptance:
+            red.append(f"{requirement_id}: Missing acceptance criteria")
+    else:
+        red.append(f"{requirement_id}: Missing acceptance criteria")
+
+    evidence = []
+    if "evidence" in item:
+        evidence = _validate_string_list(item["evidence"], f"{requirement_id}: Evidence", red)
+        if status == "completed" and isinstance(evidence, list) and not evidence:
+            red.append(f"{requirement_id}: Completed without evidence")
+        if status == "completed" and isinstance(evidence, list):
+            _validate_evidence_paths(workspace, requirement_id, evidence, red)
+    elif status == "completed":
+        red.append(f"{requirement_id}: Completed without evidence")
+
+    for field in ("assumptions", "risks"):
+        if field in item:
+            _validate_string_list(item[field], f"{requirement_id}: {field.capitalize()}", red)
+    if status == "accepted_risk" and not item.get("risks"):
+        red.append(f"{requirement_id}: Accepted risk has no risk entry")
+    if "owner" in item and not _is_text(item["owner"]):
+        red.append(f"{requirement_id}: owner must be non-blank text")
+
+    reviews = item.get("required_reviews")
+    if "required_reviews" in item:
+        if not isinstance(reviews, list):
+            red.append(f"{requirement_id}: Required reviews must be a list")
+        elif not reviews:
+            red.append(f"{requirement_id}: Missing required reviews")
+        else:
+            seen = set()
+            for review_index, review in enumerate(reviews, 1):
+                if not isinstance(review, dict):
+                    red.append(f"{requirement_id}: Review #{review_index} must be an object")
+                    continue
+                reviewer = review.get("reviewer")
+                review_status = review.get("status")
+                if "reason" in review and not _is_text(review["reason"]):
+                    red.append(f"{requirement_id}: Review {reviewer or review_index} has invalid reason")
+                if not _is_text(reviewer):
+                    red.append(f"{requirement_id}: Review #{review_index} has invalid reviewer")
+                elif reviewer in seen:
+                    red.append(f"{requirement_id}: Duplicate required review: {reviewer}")
+                else:
+                    seen.add(reviewer)
+                    if known_reviewers is not None and reviewer not in known_reviewers:
+                        red.append(f"{requirement_id}: Required reviewer is not in the standing team: {reviewer}")
+                if review_status not in VALID_REVIEW_STATUSES:
+                    red.append(f"{requirement_id}: Review {reviewer or review_index} has invalid status: {review_status}")
+                elif review_status == "pending":
+                    amber.append(f"{requirement_id}: Required review is pending: {reviewer}")
+    else:
+        red.append(f"{requirement_id}: Missing required reviews")
+
+    if status in VALID_STATUSES and status not in FINAL_STATUSES:
+        amber.append(f"{requirement_id}: Mission work remains open with status {status}")
+    if require_traceability:
+        red.extend(_validate_traceability(item.get("traceability"), requirement_id, mission_prompt, constraint_ids))
+    return red, amber, item.get("id") if _is_text(item.get("id")) else None
+
+
+def _validate_contract_records(values, label, mission_prompt=None, constraint_ids=None, require_traceability=False):
+    findings = []
+    if not isinstance(values, list) or not values:
+        return [f"Mission contract: Missing generated {label.lower()}"]
+    seen = set()
+    for index, value in enumerate(values, 1):
+        if not isinstance(value, dict):
+            findings.append(f"Mission contract: {label} #{index} must be an object")
+            continue
+        identifier = value.get("id")
+        if not _is_text(identifier):
+            findings.append(f"Mission contract: {label} #{index} has an invalid id")
+        elif identifier in seen:
+            findings.append(f"Mission contract: Duplicate {label.lower()} id: {identifier}")
+        else:
+            seen.add(identifier)
+        if not _is_text(value.get("statement")):
+            findings.append(f"Mission contract: {label} #{index} has an invalid statement")
+        if require_traceability:
+            findings.extend(_validate_traceability(
+                value.get("traceability"), f"Mission contract: {identifier or label + ' #' + str(index)}",
+                mission_prompt, constraint_ids,
+            ))
+    return findings
+
+
+def _validate_constraints(value, mission_prompt):
+    findings, identifiers = [], set()
+    if not isinstance(value, dict):
+        return ["Mission contract: constraints must be an object"], identifiers
+    for category in CONSTRAINT_CATEGORIES:
+        entries = value.get(category)
+        if not isinstance(entries, list):
+            findings.append(f"Mission contract: Constraint category {category} must be a list")
+            continue
+        for index, entry in enumerate(entries, 1):
+            label = f"Mission contract: {category} constraint #{index}"
+            if not isinstance(entry, dict):
+                findings.append(f"{label} must be an object")
+                continue
+            identifier = entry.get("id")
+            if not _is_text(identifier):
+                findings.append(f"{label} has an invalid id")
+            elif identifier in identifiers:
+                findings.append(f"Mission contract: Duplicate constraint id: {identifier}")
+            else:
+                identifiers.add(identifier)
+            if not _is_text(entry.get("statement")):
+                findings.append(f"{label} has an invalid statement")
+            excerpt = entry.get("prompt_excerpt")
+            if not _is_text(excerpt):
+                findings.append(f"{label} has no prompt excerpt")
+            elif not _is_text(mission_prompt) or excerpt not in mission_prompt:
+                findings.append(f"{label} excerpt does not occur in the authoritative mission prompt")
+    return findings, identifiers
+
+
+def _validate_clarifications(values, mission_prompt, constraint_ids):
+    red, amber = [], []
+    if not isinstance(values, list):
+        return ["Mission contract: clarifications must be a list"], amber
+    seen = set()
+    for index, value in enumerate(values, 1):
+        label = f"Mission contract: Clarification #{index}"
+        if not isinstance(value, dict):
+            red.append(f"{label} must be an object")
+            continue
+        identifier = value.get("id")
+        if not _is_text(identifier):
+            red.append(f"{label} has an invalid id")
+        elif identifier in seen:
+            red.append(f"Mission contract: Duplicate clarification id: {identifier}")
+        else:
+            seen.add(identifier)
+            label = f"Mission contract: {identifier}"
+        if not _is_text(value.get("question")):
+            red.append(f"{label} has an invalid question")
+        status = value.get("status")
+        if status not in VALID_CLARIFICATION_STATUSES:
+            red.append(f"{label} has invalid status: {status}")
+        elif status == "open":
+            amber.append(f"{label} remains open: {value.get('question', 'question missing')}")
+        red.extend(_validate_traceability(value.get("traceability"), label, mission_prompt, constraint_ids))
+    return red, amber
+
+
+def assure(workspace: Path) -> AssuranceResult:
+    red_findings = []
+    amber_findings = []
+    missing = [name for name in REQUIRED_FILES if not (workspace / name).is_file()]
+    red_findings.extend("Workspace: Missing required file: " + name for name in missing)
+
+    mission = None
+    mission_id = None
+    if "mission.yaml" not in missing:
+        try:
+            mission = read_yaml(workspace / "mission.yaml")
+        except ValueError as exc:
+            red_findings.append(f"Mission: {exc}")
+        if mission is not None:
+            if not isinstance(mission, dict):
+                red_findings.append("Mission: mission.yaml must contain an object")
+            else:
+                for field in ("id", "title", "objective", "mission_prompt", "status"):
+                    if not _is_text(mission.get(field)):
+                        red_findings.append(f"Mission: Missing or invalid mission field: {field}")
+                mission_id = mission.get("id") if _is_text(mission.get("id")) else None
+
+    known_reviewers = None
+    if "agents.yaml" not in missing:
+        try:
+            agents = read_yaml(workspace / "agents.yaml")
+        except ValueError as exc:
+            red_findings.append(f"Mission: {exc}")
+        else:
+            if not isinstance(agents, dict) or not isinstance(agents.get("agents"), list) or not agents["agents"]:
+                red_findings.append("Mission: agents.yaml must contain a non-empty agents list")
+            else:
+                known_reviewers = set()
+                for index, agent in enumerate(agents["agents"], 1):
+                    if not isinstance(agent, dict) or not _is_text(agent.get("id")):
+                        red_findings.append(f"Mission: Agent #{index} has an invalid id")
+                    else:
+                        known_reviewers.add(agent["id"])
+
+    requirements = None
+    if "ledger.yaml" not in missing:
+        try:
+            ledger = read_yaml(workspace / "ledger.yaml")
+        except ValueError as exc:
+            red_findings.append(f"Mission: {exc}")
+        else:
+            if not isinstance(ledger, dict) or not isinstance(ledger.get("requirements"), list):
+                red_findings.append("Mission: ledger.yaml must contain a requirements list")
+            else:
+                requirements = ledger["requirements"]
+                generated_contract = ledger.get("generated_by") == "mission_analyst"
+                contract_constraint_ids = None
+                if ledger.get("generated_by") == "mission_analyst":
+                    if ledger.get("mission_id") != mission_id:
+                        red_findings.append("Mission contract: mission_id does not match mission.yaml")
+                    expected_prompt = mission.get("mission_prompt") if isinstance(mission, dict) else None
+                    if ledger.get("mission_prompt") != expected_prompt:
+                        red_findings.append("Mission contract: mission_prompt does not match the authoritative mission prompt")
+                    constraint_findings, contract_constraint_ids = _validate_constraints(ledger.get("constraints"), expected_prompt)
+                    red_findings.extend(constraint_findings)
+                    red_findings.extend(_validate_contract_records(ledger.get("assumptions"), "Assumption", expected_prompt, contract_constraint_ids, True))
+                    red_findings.extend(_validate_contract_records(ledger.get("risks"), "Risk", expected_prompt, contract_constraint_ids, True))
+                    clarification_red, clarification_amber = _validate_clarifications(ledger.get("clarifications"), expected_prompt, contract_constraint_ids)
+                    red_findings.extend(clarification_red)
+                    amber_findings.extend(clarification_amber)
+                seen_ids = set()
+                for index, item in enumerate(requirements, 1):
+                    item_red, item_amber, requirement_id = _validate_requirement(
+                        item, index, workspace, known_reviewers,
+                        ledger.get("mission_prompt"), contract_constraint_ids, generated_contract,
+                    )
+                    red_findings.extend(item_red)
+                    amber_findings.extend(item_amber)
+                    if requirement_id in seen_ids:
+                        red_findings.append(f"{requirement_id}: Duplicate requirement id")
+                    elif requirement_id:
+                        seen_ids.add(requirement_id)
+
+    if "events.jsonl" not in missing:
+        red_findings.extend(_validate_audit(workspace / "events.jsonl", mission_id))
+
+    if red_findings:
+        return AssuranceResult("RED", "NO-GO", 100, red_findings + amber_findings)
+    if requirements is not None and not requirements:
+        return AssuranceResult("AMBER", "NO-GO", 100, ["Mission: No requirements have been planned"])
+    if amber_findings:
+        return AssuranceResult("AMBER", "NO-GO", 100, amber_findings)
+    return AssuranceResult("GREEN", "GO", 100, ["Mission contract satisfied: all requirements are closed with acceptance criteria, verifiable evidence, completed reviews, and a valid audit trail"])
