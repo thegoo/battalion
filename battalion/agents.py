@@ -17,6 +17,7 @@ MISSION_ANALYST_RESPONSIBILITIES = [
     "identify assumptions and risks",
     "identify clarification questions instead of making material assumptions",
     "trace generated artifacts to exact mission prompt statements",
+    "reconcile human clarification decisions into the mission contract",
     "recommend required standing-team reviews",
     "create the initial mission contract",
 ]

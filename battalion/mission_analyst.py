@@ -123,7 +123,7 @@ def _source(items, prompt):
     return items[0]["prompt_excerpt"] if items else prompt
 
 
-def _clarifications(prompt: str, constraints) -> List[Dict[str, Any]]:
+def _clarifications(prompt: str, constraints, created_at: str) -> List[Dict[str, Any]]:
     questions = []
     has_endpoint = bool(constraints["functional"])
     has_path = _matches(prompt, r"(?:path|route)(?:\s+is|\s+at|:)?\s*[`'\"]?/[a-z0-9_/{}/.-]+|(?:^|\s)/[a-z0-9_/{}/.-]+")
@@ -135,7 +135,18 @@ def _clarifications(prompt: str, constraints) -> List[Dict[str, Any]]:
             "id": f"Q-{len(questions) + 1:03d}",
             "question": question,
             "status": "open",
+            "answer": None,
+            "created_at": created_at,
+            "resolved_at": None,
+            "resolved_by": None,
             "traceability": _trace(excerpt, rationale, constraint_ids),
+            "history": [{
+                "action": "created",
+                "status": "open",
+                "value": question,
+                "actor": "mission_analyst",
+                "timestamp": created_at,
+            }],
         })
 
     if has_endpoint and not has_path:
@@ -152,7 +163,7 @@ def _clarifications(prompt: str, constraints) -> List[Dict[str, Any]]:
     return questions
 
 
-def generate_mission_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
+def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
     """Convert an immutable mission prompt into a traceable initial contract."""
     constraints = extract_constraints(prompt)
     requirements = []
@@ -269,7 +280,7 @@ def generate_mission_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
         "developer", operational, "Documentation is required to operate and verify the solution described by the prompt.",
     )
 
-    clarifications = _clarifications(prompt, constraints)
+    clarifications = _clarifications(prompt, constraints, created_at)
     first_excerpt = _source(constraints["technical"] or constraints["functional"], prompt)
     assumptions = [{
         "id": "A-001",
@@ -308,3 +319,94 @@ def generate_mission_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
         "risks": risks,
         "clarifications": clarifications,
     }
+
+
+def _apply_clarification_trace(requirement: Dict[str, Any], clarification: Dict[str, Any]) -> None:
+    trace = requirement.setdefault("traceability", {})
+    identifiers = trace.setdefault("clarification_ids", [])
+    if clarification["id"] not in identifiers:
+        identifiers.append(clarification["id"])
+    trace.setdefault("clarification_answers", {})[clarification["id"]] = clarification["answer"]
+
+
+def _replace_or_append(values: List[str], prefixes: Sequence[str], replacement: str) -> None:
+    indexes = [index for index, value in enumerate(values) if any(value.startswith(prefix) for prefix in prefixes)]
+    if indexes:
+        values[indexes[0]] = replacement
+        for index in reversed(indexes[1:]):
+            values.pop(index)
+    elif replacement not in values:
+        values.append(replacement)
+
+
+def reconcile_mission_contract(contract: Dict[str, Any]) -> List[str]:
+    """Apply resolved clarification decisions to existing requirements in place."""
+    resolved = [item for item in contract.get("clarifications", []) if item.get("status") in {"resolved", "superseded"}]
+    requirements = contract.get("requirements", [])
+    updated = set()
+
+    def answer_for(question_text: str):
+        return next((item for item in resolved if question_text in item.get("question", "").lower()), None)
+
+    framework = answer_for("framework")
+    if framework:
+        requirement = next((item for item in requirements if item.get("statement", "").startswith("Create ") and "application" in item.get("statement", "")), None)
+        if requirement:
+            uses_typescript = any(item.get("statement") == "TypeScript is required." for item in contract.get("constraints", {}).get("technical", []))
+            requirement["statement"] = f"Create {framework['answer']}{' TypeScript' if uses_typescript else ''} application"
+            _replace_or_append(requirement["acceptance"], ("Application uses ",), f"Application uses {framework['answer']}")
+            _apply_clarification_trace(requirement, framework)
+            updated.add(requirement["id"])
+        assumption = next((item for item in contract.get("assumptions", []) if "selected application framework" in item.get("statement", "")), None)
+        if assumption is None:
+            assumption = {
+                "id": f"A-{len(contract.get('assumptions', [])) + 1:03d}",
+                "statement": f"{framework['answer']} is the selected application framework.",
+                "traceability": dict(framework["traceability"]),
+            }
+            contract.setdefault("assumptions", []).append(assumption)
+        assumption["traceability"]["clarification_ids"] = [framework["id"]]
+        assumption["traceability"]["clarification_answers"] = {framework["id"]: framework["answer"]}
+
+    endpoint = answer_for("endpoint path")
+    if endpoint:
+        requirement = next((item for item in requirements if "health endpoint" in item.get("statement", "").lower()), None)
+        if requirement:
+            requirement["statement"] = f"Implement {endpoint['answer']} health endpoint"
+            _replace_or_append(
+                requirement["acceptance"],
+                ("A health endpoint exists", "A valid GET request returns HTTP 200", "GET /"),
+                f"GET {endpoint['answer']} returns HTTP 200",
+            )
+            _apply_clarification_trace(requirement, endpoint)
+            updated.add(requirement["id"])
+
+    timestamp_format = answer_for("timestamp format")
+    if timestamp_format:
+        requirement = next((item for item in requirements if "health endpoint" in item.get("statement", "").lower()), None)
+        if requirement:
+            _replace_or_append(requirement["acceptance"], ("The response includes a timestamp", "Response timestamp uses "), f"Response timestamp uses {timestamp_format['answer']} format")
+            _apply_clarification_trace(requirement, timestamp_format)
+            updated.add(requirement["id"])
+
+    owasp = answer_for("owasp")
+    if owasp:
+        requirement = next((item for item in requirements if item.get("statement") == "Implement secure error handling"), None)
+        if requirement:
+            _replace_or_append(
+                requirement["acceptance"],
+                ("Security-relevant failures are handled", "Error handling follows "),
+                f"Error handling follows {owasp['answer']}",
+            )
+            for review in requirement.get("required_reviews", []):
+                if review.get("reviewer") == "secops":
+                    review["reason"] = f"Validate error handling and disclosure controls against {owasp['answer']}."
+            _apply_clarification_trace(requirement, owasp)
+            updated.add(requirement["id"])
+        for risk in contract.get("risks", []):
+            if "OWASP" in risk.get("statement", ""):
+                risk["statement"] = f"Security controls must remain aligned with {owasp['answer']}."
+                risk.setdefault("traceability", {})["clarification_ids"] = [owasp["id"]]
+                risk["traceability"]["clarification_answers"] = {owasp["id"]: owasp["answer"]}
+
+    return sorted(updated)

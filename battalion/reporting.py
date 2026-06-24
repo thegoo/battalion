@@ -59,12 +59,20 @@ def render_report(workspace: Path) -> str:
             for value in values if isinstance(value, dict)
         )
     clarification_lines = []
+    clarification_history = []
     for clarification in ledger.get("clarifications", []):
         if isinstance(clarification, dict):
             clarification_lines.append(
-                f"{clarification.get('id', '—')} [{clarification.get('status', '—')}]: {clarification.get('question', '—')}"
+                f"{clarification.get('id', '—')} [{str(clarification.get('status', '—')).upper()}]: "
+                f"{clarification.get('question', '—')} — Answer: {clarification.get('answer') or 'None'} — "
+                f"Resolver: {clarification.get('resolved_by') or 'None'} — Resolved: {clarification.get('resolved_at') or 'None'}"
             )
             traceability.append(_trace_item(clarification.get("id", "Clarification"), clarification))
+            clarification_history.extend(
+                f"{clarification.get('id', '—')}: {entry.get('timestamp', '—')} — {entry.get('actor', '—')} — "
+                f"{str(entry.get('action', '—')).upper()} — {entry.get('value') or 'None'}"
+                for entry in clarification.get("history", []) if isinstance(entry, dict)
+            )
     for req in requirements:
         rows.append(
             f"| {req.get('id', '—')} | {req.get('statement', '—')} | {req.get('status', '—')} | "
@@ -110,6 +118,10 @@ def render_report(workspace: Path) -> str:
 
 {bullet(clarification_lines)}
 
+## Clarification History
+
+{bullet(clarification_history)}
+
 ## Prompt Traceability
 
 {bullet(traceability)}
@@ -151,6 +163,10 @@ def render_report(workspace: Path) -> str:
 - **Status:** {result.status}
 - **Recommendation:** {result.recommendation}
 - **Confidence:** {result.confidence}
+- **Open clarifications:** {result.clarification_counts.get('open', 0)}
+- **Resolved clarifications:** {result.clarification_counts.get('resolved', 0)}
+- **Superseded clarifications:** {result.clarification_counts.get('superseded', 0)}
+- **Rejected clarifications:** {result.clarification_counts.get('rejected', 0)}
 
 {bullet(result.findings)}
 

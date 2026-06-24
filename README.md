@@ -1,6 +1,6 @@
-# Battalion v0.1.4 — Constraint Extraction & Prompt Traceability
+# Battalion v0.1.5 — Clarification Resolution Workflow
 
-Battalion is a deterministic, local mission-governance layer for software delivery. The Mission Analyst extracts explicit functional, technical, security, testing, and operational constraints from the immutable mission prompt, then creates a traceable mission contract.
+Battalion is a deterministic, local mission-governance layer for software delivery. Mission Analyst asks traceable clarification questions, humans resolve them through the CLI, and the mission contract reconciles those decisions into existing requirements without duplication.
 
 This slice does **not** execute autonomous agents, orchestrate models, call LLMs, provide a web UI, automate GitHub or CI/CD, run background workers, or use cloud/vector storage.
 
@@ -38,6 +38,7 @@ battalion init
 # Enter: Build a hello world REST API.
 
 battalion plan
+battalion clarify
 battalion dispatch
 battalion assure
 battalion report
@@ -95,7 +96,40 @@ Mission Assurance rejects generated contracts whose trace excerpt does not occur
 
 Mission Analyst creates clarification artifacts rather than silently selecting material details. A health API without an endpoint path, framework, timestamp format, or specific OWASP baseline produces open `Q-xxx` questions. Assumptions are limited to low-risk execution prerequisites such as availability of tools explicitly named by the prompt.
 
-Clarifications have `open` or `resolved` status. Open clarifications keep Mission Assurance at AMBER / NO-GO; malformed clarification or traceability data produces RED / NO-GO.
+Clarifications are first-class mission artifacts with `open`, `resolved`, `superseded`, and `rejected` states. Each artifact stores its question, answer, creation time, resolution time, resolver, prompt traceability, and append-only decision history.
+
+Open clarifications keep Mission Assurance at AMBER / NO-GO; terminal clarification states do not create assurance findings. Malformed lifecycle, history, or traceability data produces RED / NO-GO.
+
+## Clarification resolution
+
+Run the interactive workflow after planning:
+
+```bash
+battalion clarify
+```
+
+Battalion displays each open question, asks who is resolving it, collects answers, persists the decisions, appends audit events, and runs deterministic Mission Analyst reconciliation.
+
+For non-interactive use, repeat `--answer`:
+
+```bash
+battalion clarify --resolver "Jesse Williams" \
+  --answer "Q-001=/health" \
+  --answer "Q-002=Fastify" \
+  --answer "Q-003=ISO-8601 UTC" \
+  --answer "Q-004=OWASP API Security Top 10 2023"
+```
+
+Other terminal decisions use the same `Q-ID=value` form:
+
+```bash
+battalion clarify --resolver "Jesse Williams" --reject "Q-002=Framework decision deferred"
+battalion clarify --resolver "Jesse Williams" --supersede "Q-001=/status"
+```
+
+Resolution refines requirements in place. For the example above, the contract selects Fastify, changes the health endpoint to `/health`, requires the clarified timestamp format, narrows OWASP acceptance and SecOps scope, and updates related assumptions and risks. Requirement IDs remain stable and no duplicate requirements are created.
+
+Every lifecycle transition appends both contract history and an audit event: `clarification_created`, `clarification_resolved`, `clarification_superseded`, or `clarification_rejected`. Reconciliation emits `mission_contract_reconciled`. This keeps human decisions reconstructable while preserving a schema future agent implementations can consume.
 
 Manual requirement entry remains available when needed:
 
@@ -109,7 +143,7 @@ battalion plan --requirement "Validate JWT issuer" \
 
 Each generated review begins in `pending`. `dispatch` records a simulated dispatch and advances proposed requirements to `planned`; it does not execute or complete reviews. Assurance therefore returns AMBER / NO-GO after initial planning and dispatch because execution and reviews remain incomplete—not because planning artifacts are missing.
 
-For v0.1.4, implementation outcomes, clarification resolutions, and review decisions are recorded by editing `ledger.yaml`. Set clarifications and reviews to `resolved` or `completed`, set the requirement status, and add project-relative evidence paths. Then run:
+For v0.1.5, clarification decisions are recorded through `battalion clarify`. Implementation outcomes and review decisions remain recorded in `ledger.yaml`: complete reviews, set requirement status, and add project-relative evidence paths. Then run:
 
 ```bash
 battalion assure
@@ -118,7 +152,7 @@ battalion report
 
 `report` writes `.battalion/reports/mission-report.md` and leaves human approval pending. Only a human can close the mission.
 
-If `plan`, `dispatch`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
+If `plan`, `clarify`, `dispatch`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
 
 ## Requirement contract
 
@@ -166,7 +200,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.1.4. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.1.5. Battalion does not execute the reviewers.
 
 ## Audit validation
 
@@ -178,6 +212,8 @@ Mission Assurance verifies that `events.jsonl`:
 - contains a `mission_initialized` event whose mission ID matches `mission.yaml`.
 
 Every malformed line is reported. An absent or mismatched initialization event produces RED / NO-GO.
+
+Assurance output and mission reports summarize open, resolved, superseded, and rejected clarification counts separately from findings. After all questions are resolved, clarification findings disappear while incomplete requirements and pending reviews continue to produce AMBER / NO-GO.
 
 ## Assurance decisions
 

@@ -26,7 +26,7 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def append_event(workspace: Path, event_type: str, details=None) -> None:
-    event = {"timestamp": timestamp(), "type": event_type, "actor": "battalion_cli", "details": details or {}}
+def append_event(workspace: Path, event_type: str, details=None, actor="battalion_cli") -> None:
+    event = {"timestamp": timestamp(), "type": event_type, "actor": actor, "details": details or {}}
     with (workspace / "events.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(event, separators=(",", ":")) + "\n")
