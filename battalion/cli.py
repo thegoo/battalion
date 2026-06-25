@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .agents import standing_team
 from .assurance import assure
-from .mission_analyst import generate_mission_contract
+from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .reporting import render_report
 from .storage import append_event, read_yaml, root, timestamp, write_yaml
 
@@ -59,7 +59,7 @@ def plan(args, cwd):
         mission_prompt = mission.get("mission_prompt") or mission.get("original_prompt")
         if not isinstance(mission_prompt, str) or not mission_prompt.strip():
             raise SystemExit("Mission prompt is missing or invalid. Reinitialize the mission with a valid prompt.")
-        contract = generate_mission_contract(mission["id"], mission_prompt)
+        contract = generate_mission_contract(mission["id"], mission_prompt, timestamp())
         write_yaml(workspace / "ledger.yaml", contract)
         append_event(workspace, "mission_contract_generated", {
             "mission_id": mission["id"],
@@ -71,6 +71,13 @@ def plan(args, cwd):
             "constraint_count": sum(len(values) for values in contract["constraints"].values()),
         })
         append_event(workspace, "plan_created", {"requirement_count": len(contract["requirements"])})
+        for clarification in contract["clarifications"]:
+            append_event(workspace, "clarification_created", {
+                "mission_id": mission["id"],
+                "clarification_id": clarification["id"],
+                "action": "created",
+                "value": clarification["question"],
+            }, actor="mission_analyst")
         print("Mission Analyst generated the mission contract:\n")
         for requirement in contract["requirements"]:
             print(f"{requirement['id']} — {requirement['statement']}")
@@ -116,6 +123,86 @@ def plan(args, cwd):
     print(f"Added {req_id}: {statement}")
 
 
+def _clarification_action(value, status):
+    clarification_id, separator, answer = value.partition("=")
+    if not separator or not clarification_id.strip() or not answer.strip():
+        raise SystemExit(f"Clarification actions must use Q-ID=value syntax: {value}")
+    return clarification_id.strip(), status, answer.strip()
+
+
+def clarify(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    ledger = read_yaml(workspace / "ledger.yaml")
+    clarifications = ledger.get("clarifications")
+    if not isinstance(clarifications, list):
+        raise SystemExit("Mission contract does not contain a valid clarifications list. Run 'battalion plan' first.")
+    open_items = [item for item in clarifications if item.get("status") == "open"]
+    print(f"Clarifications: {len(open_items)} open, {sum(item.get('status') == 'resolved' for item in clarifications)} resolved")
+    for item in open_items:
+        print(f"\n{item['id']}\n{item['question']}\nAnswer: {item.get('answer') or 'None'}")
+
+    actions = []
+    actions.extend(_clarification_action(value, "resolved") for value in (args.answer or []))
+    actions.extend(_clarification_action(value, "rejected") for value in (args.reject or []))
+    actions.extend(_clarification_action(value, "superseded") for value in (args.supersede or []))
+    resolver = args.resolver
+    if not actions:
+        if not open_items:
+            print("\nNo open clarifications require answers.")
+            return
+        if not sys.stdin.isatty():
+            raise SystemExit("Provide --answer Q-ID=value and --resolver when input is non-interactive.")
+        resolver = resolver or input("\nResolved by: ").strip()
+        for item in open_items:
+            answer = input(f"\n{item['id']} — {item['question']}\n> ").strip()
+            if not answer:
+                raise SystemExit(f"Answer for {item['id']} cannot be empty.")
+            actions.append((item["id"], "resolved", answer))
+    elif not resolver and sys.stdin.isatty():
+        resolver = input("Resolved by: ").strip()
+    if not resolver:
+        raise SystemExit("Provide --resolver for clarification actions.")
+
+    by_id = {item.get("id"): item for item in clarifications}
+    action_time = timestamp()
+    audit_events = []
+    for clarification_id, status, answer in actions:
+        item = by_id.get(clarification_id)
+        if item is None:
+            raise SystemExit(f"Unknown clarification: {clarification_id}")
+        previous_status = item.get("status")
+        allowed = previous_status == "open" or (previous_status == "resolved" and status == "superseded")
+        if not allowed:
+            raise SystemExit(f"{clarification_id} cannot transition from {previous_status} to {status}.")
+        item.update(status=status, answer=answer, resolved_by=resolver, resolved_at=action_time)
+        item.setdefault("history", []).append({
+            "action": status,
+            "status": status,
+            "value": answer,
+            "actor": resolver,
+            "timestamp": action_time,
+        })
+        audit_events.append((f"clarification_{status}", {
+            "mission_id": ledger.get("mission_id"),
+            "clarification_id": clarification_id,
+            "action": status,
+            "previous_status": previous_status,
+            "value": answer,
+            "resolver": resolver,
+        }))
+
+    updated_requirements = reconcile_mission_contract(ledger)
+    write_yaml(workspace / "ledger.yaml", ledger)
+    for event_type, details in audit_events:
+        append_event(workspace, event_type, details, actor=resolver)
+    append_event(workspace, "mission_contract_reconciled", {
+        "mission_id": ledger.get("mission_id"),
+        "clarification_ids": [clarification_id for clarification_id, _, _ in actions],
+        "updated_requirements": updated_requirements,
+    }, actor="mission_analyst")
+    print(f"\nApplied {len(actions)} clarification action(s); reconciled {len(updated_requirements)} requirement(s).")
+
+
 def dispatch(args, cwd):
     workspace = workspace_or_exit(cwd)
     ledger = read_yaml(workspace / "ledger.yaml"); team = read_yaml(workspace / "agents.yaml")["agents"]
@@ -131,7 +218,12 @@ def assurance(args, cwd):
     workspace = workspace_or_exit(cwd)
     result = assure(workspace)
     if (workspace / "events.jsonl").is_file(): append_event(workspace, "assurance_completed", result.to_dict())
-    print(f"Status: {result.status}\nRecommendation: {result.recommendation}\nConfidence: {result.confidence}\nFindings:")
+    counts = result.clarification_counts
+    print(
+        f"Status: {result.status}\nRecommendation: {result.recommendation}\nConfidence: {result.confidence}\n"
+        f"Clarifications: {counts.get('open', 0)} open, {counts.get('resolved', 0)} resolved, "
+        f"{counts.get('superseded', 0)} superseded, {counts.get('rejected', 0)} rejected\nFindings:"
+    )
     for finding in result.findings: print(f"- {finding}")
 
 
@@ -145,19 +237,24 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.1.4 traceable Mission Analyst governance")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.1.5 clarification resolution governance")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
     p.add_argument("--acceptance", action="append", help="Acceptance criterion; repeat for multiple criteria")
     p.add_argument("--review", action="append", help="Required standing-team reviewer id; repeat for multiple reviews")
+    p = commands.add_parser("clarify")
+    p.add_argument("--resolver", help="Human responsible for the clarification decision")
+    p.add_argument("--answer", action="append", metavar="Q-ID=VALUE", help="Resolve a clarification; repeat as needed")
+    p.add_argument("--reject", action="append", metavar="Q-ID=REASON", help="Reject a clarification; repeat as needed")
+    p.add_argument("--supersede", action="append", metavar="Q-ID=VALUE", help="Supersede a clarification; repeat as needed")
     commands.add_parser("dispatch"); commands.add_parser("assure"); commands.add_parser("report")
     return result
 
 
 def main(argv=None, cwd=None):
     args = parser().parse_args(argv); cwd = Path.cwd() if cwd is None else Path(cwd)
-    {"init": init, "plan": plan, "dispatch": dispatch, "assure": assurance, "report": report}[args.command](args, cwd)
+    {"init": init, "plan": plan, "clarify": clarify, "dispatch": dispatch, "assure": assurance, "report": report}[args.command](args, cwd)
 
 
 if __name__ == "__main__": main()

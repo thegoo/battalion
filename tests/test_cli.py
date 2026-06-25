@@ -95,7 +95,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.1.4", output.getvalue())
+        self.assertIn("Battalion v0.1.5", output.getvalue())
 
     def test_interactive_init_captures_and_stores_mission_prompt(self):
         mission_prompt = "Build a hello world REST API."
@@ -121,9 +121,10 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_mission_analyst_generation_is_deterministic(self):
         prompt = "Build a hello world REST API."
+        created_at = "2026-06-23T00:00:00Z"
         self.assertEqual(
-            generate_mission_contract("M-001", prompt),
-            generate_mission_contract("M-001", prompt),
+            generate_mission_contract("M-001", prompt, created_at),
+            generate_mission_contract("M-001", prompt, created_at),
         )
 
     def test_generated_requirements_have_acceptance_criteria(self):
@@ -232,6 +233,13 @@ class BattalionCliTests(unittest.TestCase):
     def test_completed_traceable_generated_contract_can_reach_green(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("plan")
+        self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+            "--answer", "Q-004=OWASP API Security Top 10 2023",
+        )
         evidence = self.cwd / "evidence" / "mission-validation.txt"
         evidence.parent.mkdir()
         evidence.write_text("All prompt-derived requirements validated.\n", encoding="utf-8")
@@ -241,11 +249,108 @@ class BattalionCliTests(unittest.TestCase):
             requirement["evidence"] = ["evidence/mission-validation.txt"]
             for review in requirement["required_reviews"]:
                 review["status"] = "completed"
-        for clarification in ledger["clarifications"]:
-            clarification["status"] = "resolved"
         write_yaml(self.ledger_path, ledger)
         result = self.result()
         self.assertEqual((result.status, result.recommendation, result.confidence), ("GREEN", "GO", 100))
+
+    def test_clarifications_can_be_resolved_and_reconcile_requirements(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        output = self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+            "--answer", "Q-004=OWASP API Security Top 10 2023",
+        )
+        ledger = read_yaml(self.ledger_path)
+        self.assertIn("Applied 4 clarification action(s)", output)
+        self.assertTrue(all(item["status"] == "resolved" for item in ledger["clarifications"]))
+        self.assertEqual(ledger["clarifications"][0]["answer"], "/health")
+        self.assertEqual(ledger["clarifications"][0]["resolved_by"], "Jesse Williams")
+        self.assertTrue(ledger["clarifications"][0]["resolved_at"])
+        requirements = {item["id"]: item for item in ledger["requirements"]}
+        self.assertEqual(requirements["R-001"]["statement"], "Create Fastify TypeScript application")
+        self.assertEqual(requirements["R-002"]["statement"], "Implement /health health endpoint")
+        self.assertIn("GET /health returns HTTP 200", requirements["R-002"]["acceptance"])
+        self.assertIn("Response timestamp uses ISO-8601 UTC format", requirements["R-002"]["acceptance"])
+        self.assertIn("Error handling follows OWASP API Security Top 10 2023", requirements["R-005"]["acceptance"])
+        self.assertEqual(len(requirements), 7)
+
+    def test_clarification_resolution_creates_auditable_history(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
+        clarification = read_yaml(self.ledger_path)["clarifications"][0]
+        self.assertEqual([entry["action"] for entry in clarification["history"]], ["created", "resolved"])
+        self.assertEqual(clarification["history"][0]["actor"], "mission_analyst")
+        self.assertEqual(clarification["history"][1]["actor"], "Jesse Williams")
+        events = [json.loads(line) for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        created = [event for event in events if event["type"] == "clarification_created"]
+        resolved = [event for event in events if event["type"] == "clarification_resolved"]
+        reconciled = [event for event in events if event["type"] == "mission_contract_reconciled"]
+        self.assertEqual(len(created), 4)
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(resolved[0]["actor"], "Jesse Williams")
+        self.assertEqual(resolved[0]["details"]["value"], "/health")
+        self.assertEqual(len(reconciled), 1)
+
+    def test_assurance_rejects_clarification_history_without_matching_audit_event(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
+        event_path = self.workspace / "events.jsonl"
+        events = [json.loads(line) for line in event_path.read_text().splitlines()]
+        events = [event for event in events if event["type"] != "clarification_resolved"]
+        event_path.write_text("".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events), encoding="utf-8")
+        result = self.result()
+        self.assertEqual((result.status, result.recommendation), ("RED", "NO-GO"))
+        self.assertIn("Mission: Audit trail is missing clarification_resolved event for Q-001", result.findings)
+
+    def test_resolved_clarifications_stop_contributing_assurance_findings(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        before = self.result()
+        self.assertEqual(before.clarification_counts["open"], 4)
+        self.assertEqual(before.clarification_counts["resolved"], 0)
+        self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+            "--answer", "Q-004=OWASP API Security Top 10 2023",
+        )
+        after = self.result()
+        self.assertEqual((after.status, after.recommendation), ("AMBER", "NO-GO"))
+        self.assertEqual(after.clarification_counts["open"], 0)
+        self.assertEqual(after.clarification_counts["resolved"], 4)
+        self.assertFalse(any("Clarification" in finding or "Q-" in finding for finding in after.findings))
+        self.assertTrue(any("Mission work remains open" in finding for finding in after.findings))
+
+    def test_interactive_clarify_collects_human_answers(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        responses = iter(["Jesse Williams", "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023"])
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
+            self.run_cli("clarify")
+        clarifications = read_yaml(self.ledger_path)["clarifications"]
+        self.assertEqual([item["answer"] for item in clarifications], [
+            "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023",
+        ])
+
+    def test_rejected_and_superseded_clarification_states_are_audited(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--supersede", "Q-001=/status")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--reject", "Q-002=Framework selection deferred")
+        clarifications = read_yaml(self.ledger_path)["clarifications"]
+        self.assertEqual(clarifications[0]["status"], "superseded")
+        self.assertEqual(clarifications[1]["status"], "rejected")
+        self.assertEqual([entry["action"] for entry in clarifications[0]["history"]], ["created", "resolved", "superseded"])
+        event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        self.assertIn("clarification_superseded", event_types)
+        self.assertIn("clarification_rejected", event_types)
 
     def test_mission_analyst_generates_explainable_review_assignments(self):
         self.initialize()
@@ -299,6 +404,7 @@ class BattalionCliTests(unittest.TestCase):
         )
         commands = (
             ["plan", "--requirement", "Example"],
+            ["clarify"],
             ["dispatch"],
             ["assure"],
             ["report"],
@@ -502,7 +608,7 @@ class BattalionCliTests(unittest.TestCase):
         self.run_cli("report")
         report = (self.workspace / "reports" / "mission-report.md").read_text()
         for heading in (
-            "## Mission", "## Mission Contract", "## Extracted Constraints", "## Clarifications",
+            "## Mission", "## Mission Contract", "## Extracted Constraints", "## Clarifications", "## Clarification History",
             "## Prompt Traceability", "## Doctrine", "## Standing Agent Team", "## Requirements",
             "## Acceptance Criteria", "## Evidence Summary", "## Review Summary",
             "## Assumptions", "## Risks", "## Assurance Result", "## Human Approval",
