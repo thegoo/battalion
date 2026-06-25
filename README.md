@@ -1,8 +1,8 @@
-# Battalion v0.1.5 — Clarification Resolution Workflow
+# Battalion v0.2.0 — Dispatcher Runtime Skeleton
 
-Battalion is a deterministic, local mission-governance layer for software delivery. Mission Analyst asks traceable clarification questions, humans resolve them through the CLI, and the mission contract reconciles those decisions into existing requirements without duplication.
+Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, humans resolve clarification questions, Mission Assurance independently validates the contract, and the Dispatcher now owns sequential runtime assignment state.
 
-This slice does **not** execute autonomous agents, orchestrate models, call LLMs, provide a web UI, automate GitHub or CI/CD, run background workers, or use cloud/vector storage.
+This slice does **not** execute autonomous agents, orchestrate models, call LLMs, provide a web UI, automate GitHub or CI/CD, run background workers, or use cloud/vector storage. `battalion execute` is a local simulation seam for future runners.
 
 ## Development installation
 
@@ -39,7 +39,10 @@ battalion init
 
 battalion plan
 battalion clarify
+battalion assure
 battalion dispatch
+battalion execute
+battalion status
 battalion assure
 battalion report
 ```
@@ -141,9 +144,83 @@ battalion plan --requirement "Validate JWT issuer" \
   --review tester
 ```
 
-Each generated review begins in `pending`. `dispatch` records a simulated dispatch and advances proposed requirements to `planned`; it does not execute or complete reviews. Assurance therefore returns AMBER / NO-GO after initial planning and dispatch because execution and reviews remain incomplete—not because planning artifacts are missing.
+Each generated review begins in `pending`. Run `battalion assure` after `plan` and `clarify` to validate the mission contract before runtime dispatch. At that point Assurance may still return AMBER / NO-GO because work, evidence, or reviews remain incomplete; that is expected. RED / NO-GO means the contract or audit trail is malformed and should be fixed before dispatch.
 
-For v0.1.5, clarification decisions are recorded through `battalion clarify`. Implementation outcomes and review decisions remain recorded in `ledger.yaml`: complete reviews, set requirement status, and add project-relative evidence paths. Then run:
+`dispatch` creates first-class runtime assignments; it does not execute or complete reviews. Run `battalion assure` again after execution evidence and reviews are recorded for the final GREEN / GO decision.
+
+## Dispatcher runtime
+
+The Dispatcher is the only authority allowed to advance runtime execution. Units do not mark missions complete, queue additional work, approve themselves, or skip requirements. Units only report result packets; the Dispatcher consumes those packets and decides the next action.
+
+Runtime state is stored in `.battalion/assignments.yaml`. Assignment records include:
+
+```json
+{
+  "id": "ASG-001",
+  "requirement_id": "R-001",
+  "assigned_unit": "developer",
+  "status": "ASSIGNED",
+  "scoped_context": {},
+  "required_outputs": ["code changes", "implementation notes", "evidence references"],
+  "dependencies": [],
+  "evidence": [],
+  "result_packet": null,
+  "abort_packet": null,
+  "audit_history": []
+}
+```
+
+Valid assignment states are `CREATED`, `ASSIGNED`, `EXECUTING`, `WAITING`, `COMPLETE`, `BLOCKED`, `FAILED`, and `ABORTED`. Only Dispatcher code changes assignment state, and every state change appends assignment history plus `events.jsonl` audit entries.
+
+### Dispatch
+
+```bash
+battalion dispatch
+```
+
+`dispatch` reads the mission contract, finds the next non-final requirement, selects the required unit from the requirement owner, creates an assignment, scopes context, persists it, and emits audit events. Sequential execution is enforced: only one assignment may be active at a time. If failed, blocked, or aborted work exists, the Dispatcher halts instead of creating more work.
+
+Scoped context is deliberately narrow. Developer assignments receive the assigned requirement, acceptance criteria, relevant constraints, resolved clarifications, and required evidence references. Mission Assurance and Dispatcher remain the only roles intended to receive full mission context.
+
+### Execute
+
+```bash
+battalion execute --outcome COMPLETE --evidence evidence/asg-001.txt
+```
+
+`execute` simulates unit execution. It does not call an LLM or external runner. It creates a result packet with one of: `COMPLETE`, `BLOCKED`, `FAILED`, `NEEDS_CLARIFICATION`, `NEEDS_SUPPORT`, or `ABORTED`. The Dispatcher consumes the packet and determines the next action.
+
+Failure outcomes persist an abort packet:
+
+```bash
+battalion execute \
+  --outcome FAILED \
+  --failure-type VALIDATION_FAILED \
+  --reason "Unit tests failed" \
+  --impact "Cannot validate requirement" \
+  --recommendation "Return work to Developer" \
+  --decision-action return_work_to_previous_unit
+```
+
+Failure types are `MISSING_CONTEXT`, `DEPENDENCY_MISSING`, `VALIDATION_FAILED`, `SECURITY_BLOCKER`, `TOOL_FAILURE`, `PERMISSION_DENIED`, `UNRECOVERABLE_ERROR`, and `OTHER`.
+
+Dispatcher decisions include dispatching the next assignment, retrying an assignment, returning work to a previous unit, requesting support, generating a clarification, escalating to a human, accepting risk, or aborting the mission. Every decision creates an audit event.
+
+### Status
+
+```bash
+battalion status
+```
+
+`status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
+
+For v0.2.0, clarification decisions are recorded through `battalion clarify`. Run `battalion assure` immediately after clarification resolution to validate the contract before dispatching runtime work:
+
+```bash
+battalion assure
+```
+
+Runtime outcomes are recorded through `battalion dispatch` and `battalion execute`. Review decisions remain governance records in `ledger.yaml`: complete reviews and ensure project-relative evidence paths exist. Then run final assurance and reporting:
 
 ```bash
 battalion assure
@@ -152,7 +229,7 @@ battalion report
 
 `report` writes `.battalion/reports/mission-report.md` and leaves human approval pending. Only a human can close the mission.
 
-If `plan`, `clarify`, `dispatch`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
+If `plan`, `clarify`, `dispatch`, `execute`, `status`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
 
 ## Requirement contract
 
@@ -200,7 +277,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.1.5. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.2.0. Battalion does not execute the reviewers.
 
 ## Audit validation
 

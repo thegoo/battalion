@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from battalion.assurance import assure
 from battalion.cli import main
+from battalion.dispatcher import load_assignments
 from battalion.mission_analyst import generate_mission_contract
 from battalion.models import AssuranceResult
 from battalion.storage import read_yaml, write_yaml
@@ -95,7 +96,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.1.5", output.getvalue())
+        self.assertIn("Battalion v0.2.0", output.getvalue())
 
     def test_interactive_init_captures_and_stores_mission_prompt(self):
         mission_prompt = "Build a hello world REST API."
@@ -265,6 +266,7 @@ class BattalionCliTests(unittest.TestCase):
         )
         ledger = read_yaml(self.ledger_path)
         self.assertIn("Applied 4 clarification action(s)", output)
+        self.assertIn("Summary: 4 resolved, 0 still open.", output)
         self.assertTrue(all(item["status"] == "resolved" for item in ledger["clarifications"]))
         self.assertEqual(ledger["clarifications"][0]["answer"], "/health")
         self.assertEqual(ledger["clarifications"][0]["resolved_by"], "Jesse Williams")
@@ -330,13 +332,46 @@ class BattalionCliTests(unittest.TestCase):
     def test_interactive_clarify_collects_human_answers(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("plan")
-        responses = iter(["Jesse Williams", "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023"])
+        responses = iter(["/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
-            self.run_cli("clarify")
+            output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
         self.assertEqual([item["answer"] for item in clarifications], [
             "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023",
         ])
+        self.assertTrue(all(item["status"] == "resolved" for item in clarifications))
+        self.assertIn("Summary: 4 resolved, 0 still open.", output)
+        event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(event_types.count("clarification_resolved"), 4)
+
+    def test_interactive_clarify_blank_answer_leaves_clarification_open(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        responses = iter(["/health", "", "", "", "Jesse Williams"])
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
+            output = self.run_cli("clarify")
+        clarifications = read_yaml(self.ledger_path)["clarifications"]
+        self.assertEqual(clarifications[0]["status"], "resolved")
+        self.assertEqual(clarifications[0]["answer"], "/health")
+        self.assertEqual([item["status"] for item in clarifications[1:]], ["open", "open", "open"])
+        self.assertEqual([item.get("answer") for item in clarifications[1:]], [None, None, None])
+        self.assertIn("Summary: 1 resolved, 3 still open.", output)
+        events = [json.loads(line) for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        resolved = [event for event in events if event["type"] == "clarification_resolved"]
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(resolved[0]["details"]["clarification_id"], "Q-001")
+
+    def test_interactive_clarify_all_blank_answers_do_not_require_resolver(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        responses = iter(["", "", "", ""])
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
+            output = self.run_cli("clarify")
+        clarifications = read_yaml(self.ledger_path)["clarifications"]
+        self.assertTrue(all(item["status"] == "open" for item in clarifications))
+        self.assertIn("Summary: 0 resolved, 4 still open.", output)
+        event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        self.assertNotIn("clarification_resolved", event_types)
 
     def test_rejected_and_superseded_clarification_states_are_audited(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
@@ -406,6 +441,8 @@ class BattalionCliTests(unittest.TestCase):
             ["plan", "--requirement", "Example"],
             ["clarify"],
             ["dispatch"],
+            ["execute"],
+            ["status"],
             ["assure"],
             ["report"],
         )
@@ -443,13 +480,114 @@ class BattalionCliTests(unittest.TestCase):
         self.plan_contract()
         self.run_cli("dispatch")
         requirement = read_yaml(self.ledger_path)["requirements"][0]
-        self.assertEqual((requirement["id"], requirement["status"]), ("R-001", "planned"))
+        self.assertEqual((requirement["id"], requirement["status"]), ("R-001", "in_progress"))
         self.assertEqual(requirement["acceptance"], ["Unknown issuers are rejected"])
         self.assertEqual([review["status"] for review in requirement["required_reviews"]], ["pending"] * 3)
+        assignments = load_assignments(self.workspace)["assignments"]
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0]["id"], "ASG-001")
+        self.assertEqual(assignments[0]["requirement_id"], "R-001")
+        self.assertEqual(assignments[0]["assigned_unit"], "mission_analyst")
+        self.assertEqual(assignments[0]["status"], "ASSIGNED")
         events = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         self.assertIn("requirement_added", events)
         self.assertIn("plan_created", events)
-        self.assertIn("dispatch_simulated", events)
+        self.assertIn("assignment_created", events)
+        self.assertIn("dispatcher_decision", events)
+
+    def test_dispatcher_creates_developer_assignment_for_generated_contract(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        output = self.run_cli("dispatch")
+        assignment = load_assignments(self.workspace)["assignments"][0]
+        self.assertIn("Created assignment ASG-001", output)
+        self.assertEqual(assignment["assigned_unit"], "developer")
+        self.assertEqual(assignment["status"], "ASSIGNED")
+        self.assertEqual(assignment["scoped_context"]["requirement"]["id"], assignment["requirement_id"])
+        self.assertNotIn("mission_contract", assignment["scoped_context"])
+        self.assertIn("acceptance", assignment["scoped_context"]["requirement"])
+        self.assertIn("evidence references", assignment["required_outputs"])
+
+    def test_execute_complete_transitions_assignment_and_dispatches_next(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        evidence = self.cwd / "evidence" / "asg-001.txt"
+        evidence.parent.mkdir()
+        evidence.write_text("simulated complete\n", encoding="utf-8")
+        output = self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/asg-001.txt")
+        assignments = load_assignments(self.workspace)["assignments"]
+        self.assertEqual(assignments[0]["status"], "COMPLETE")
+        self.assertEqual(assignments[0]["result_packet"]["outcome"], "COMPLETE")
+        self.assertEqual(assignments[0]["evidence"], ["evidence/asg-001.txt"])
+        self.assertEqual(assignments[1]["status"], "ASSIGNED")
+        self.assertIn("Next Assignment: ASG-002", output)
+        ledger = read_yaml(self.ledger_path)
+        self.assertEqual(ledger["requirements"][0]["status"], "completed")
+        self.assertEqual(ledger["requirements"][0]["evidence"], ["evidence/asg-001.txt"])
+
+    def test_execute_failed_persists_abort_packet_and_halts_dispatch(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        self.run_cli(
+            "execute",
+            "--outcome", "FAILED",
+            "--failure-type", "VALIDATION_FAILED",
+            "--reason", "Unit tests failed",
+            "--impact", "Cannot validate requirement",
+            "--recommendation", "Return work to Developer",
+            "--decision-action", "return_work_to_previous_unit",
+        )
+        assignments = load_assignments(self.workspace)["assignments"]
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0]["status"], "FAILED")
+        self.assertEqual(assignments[0]["abort_packet"]["failure_type"], "VALIDATION_FAILED")
+        self.assertEqual(assignments[0]["abort_packet"]["reason"], "Unit tests failed")
+        self.assertEqual(assignments[0]["result_packet"]["outcome"], "FAILED")
+        output = self.run_cli("dispatch")
+        self.assertIn("Blocked by assignment ASG-001", output)
+        self.assertIn("Decision: halt_for_blocker", output)
+        self.assertEqual(len(load_assignments(self.workspace)["assignments"]), 1)
+        decisions = [
+            json.loads(line)["details"]
+            for line in (self.workspace / "events.jsonl").read_text().splitlines()
+            if json.loads(line)["type"] == "dispatcher_decision"
+        ]
+        self.assertTrue(any(item.get("action") == "return_work_to_previous_unit" for item in decisions))
+
+    def test_status_displays_runtime_dashboard(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        output = self.run_cli("status")
+        self.assertIn("Mission: Constraint Mission", output)
+        self.assertIn("Current phase: runtime", output)
+        self.assertIn("ASG-001 ASSIGNED", output)
+        self.assertIn("Blocked work:", output)
+        self.assertIn("Pending work:", output)
+        self.assertIn("Clarifications:", output)
+        self.assertIn("Recommendation: Execute active assignment ASG-001.", output)
+
+    def test_mission_cannot_advance_without_dispatcher_assignment(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        with self.assertRaises(SystemExit) as raised:
+            main(["execute", "--outcome", "COMPLETE"], self.cwd)
+        self.assertIn("No active assignment exists. Run 'battalion dispatch' first.", str(raised.exception))
+        self.assertFalse((self.workspace / "assignments.yaml").exists())
+
+    def test_assignment_history_remains_auditable(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        self.run_cli("execute", "--outcome", "BLOCKED", "--summary", "Need dependency")
+        assignment = load_assignments(self.workspace)["assignments"][0]
+        self.assertEqual([entry["status"] for entry in assignment["audit_history"]], ["CREATED", "ASSIGNED", "EXECUTING", "BLOCKED"])
+        self.assertTrue(all(entry["timestamp"] for entry in assignment["audit_history"]))
+        events = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        self.assertIn("result_packet_received", events)
+        self.assertGreaterEqual(events.count("assignment_state_changed"), 3)
 
     def test_open_valid_contract_is_amber_no_go(self):
         self.initialize()
@@ -611,7 +749,7 @@ class BattalionCliTests(unittest.TestCase):
             "## Mission", "## Mission Contract", "## Extracted Constraints", "## Clarifications", "## Clarification History",
             "## Prompt Traceability", "## Doctrine", "## Standing Agent Team", "## Requirements",
             "## Acceptance Criteria", "## Evidence Summary", "## Review Summary",
-            "## Assumptions", "## Risks", "## Assurance Result", "## Human Approval",
+            "## Runtime Assignments", "## Assumptions", "## Risks", "## Assurance Result", "## Human Approval",
         ):
             self.assertIn(heading, report)
         self.assertIn("Unknown issuers are rejected", report)

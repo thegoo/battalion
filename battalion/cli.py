@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .agents import standing_team
 from .assurance import assure
+from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .reporting import render_report
 from .storage import append_event, read_yaml, root, timestamp, write_yaml
@@ -152,16 +153,19 @@ def clarify(args, cwd):
             return
         if not sys.stdin.isatty():
             raise SystemExit("Provide --answer Q-ID=value and --resolver when input is non-interactive.")
-        resolver = resolver or input("\nResolved by: ").strip()
         for item in open_items:
             answer = input(f"\n{item['id']} — {item['question']}\n> ").strip()
-            if not answer:
-                raise SystemExit(f"Answer for {item['id']} cannot be empty.")
-            actions.append((item["id"], "resolved", answer))
+            if answer:
+                actions.append((item["id"], "resolved", answer))
+        if actions and not resolver:
+            resolver = input("\nResolved by: ").strip()
     elif not resolver and sys.stdin.isatty():
         resolver = input("Resolved by: ").strip()
-    if not resolver:
+    if actions and not resolver:
         raise SystemExit("Provide --resolver for clarification actions.")
+    if not actions:
+        print(f"\nSummary: 0 resolved, {len(open_items)} still open.")
+        return
 
     by_id = {item.get("id"): item for item in clarifications}
     action_time = timestamp()
@@ -200,18 +204,105 @@ def clarify(args, cwd):
         "clarification_ids": [clarification_id for clarification_id, _, _ in actions],
         "updated_requirements": updated_requirements,
     }, actor="mission_analyst")
+    remaining_open = sum(item.get("status") == "open" for item in clarifications)
+    resolved_count = sum(status == "resolved" for _, status, _ in actions)
     print(f"\nApplied {len(actions)} clarification action(s); reconciled {len(updated_requirements)} requirement(s).")
+    print(f"Summary: {resolved_count} resolved, {remaining_open} still open.")
 
 
 def dispatch(args, cwd):
     workspace = workspace_or_exit(cwd)
-    ledger = read_yaml(workspace / "ledger.yaml"); team = read_yaml(workspace / "agents.yaml")["agents"]
-    planned = []
-    for req in ledger["requirements"]:
-        if req.get("status") == "proposed": req["status"] = "planned"; planned.append(req["id"])
-    write_yaml(workspace / "ledger.yaml", ledger)
-    append_event(workspace, "dispatch_simulated", {"requirements": planned, "reviewers": [a["id"] for a in team]})
-    print(f"Simulated dispatch to {len(team)} standing agents; planned {len(planned)} requirement(s).")
+    try:
+        result = dispatch_next(workspace)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    assignment = result["assignment"]
+    if assignment is None:
+        print("Dispatcher found no dispatchable work.")
+        print(f"Decision: {result['decision']}")
+        return
+    if result["decision"] == "halt_for_blocker":
+        action = "Blocked by"
+    else:
+        action = "Created" if result["created"] else "Continuing"
+    print(f"{action} assignment {assignment['id']}")
+    print(f"Requirement: {assignment['requirement_id']}")
+    print(f"Unit: {assignment['assigned_unit']}")
+    print(f"Status: {assignment['status']}")
+    print(f"Decision: {result['decision']}")
+
+
+def execute(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    try:
+        result = execute_active(
+            workspace,
+            outcome=args.outcome,
+            summary=args.summary,
+            evidence=args.evidence or [],
+            failure_type=args.failure_type,
+            reason=args.reason or "",
+            impact=args.impact or "",
+            recommendation=args.recommendation or "",
+            decision_action=args.decision_action,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    assignment = result["assignment"]
+    print(f"Executed assignment {assignment['id']}")
+    print(f"Outcome: {assignment['result_packet']['outcome']}")
+    print(f"Status: {assignment['status']}")
+    if assignment.get("abort_packet"):
+        print(f"Failure Type: {assignment['abort_packet']['failure_type']}")
+        print(f"Reason: {assignment['abort_packet']['reason']}")
+    print(f"Dispatcher Decision: {result['decision']['action']}")
+    print(f"Recommendation: {result['decision']['recommendation']}")
+    next_assignment = result.get("next_assignment")
+    if next_assignment:
+        print(f"Next Assignment: {next_assignment['id']} -> {next_assignment['assigned_unit']}")
+
+
+def status(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    try:
+        state = runtime_status(workspace)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    assignments = state["assignments"]
+    clarifications = state["clarifications"]
+    print(f"Mission: {state['mission']['title']}")
+    print(f"Current phase: {state['current_phase']}")
+    print("Assignments:")
+    if assignments:
+        for assignment in assignments:
+            print(f"- {assignment['id']} {assignment['status']} {assignment['assigned_unit']} -> {assignment['requirement_id']}")
+    else:
+        print("- None")
+    print("Blocked work:")
+    if state["blocked_work"]:
+        for assignment in state["blocked_work"]:
+            print(f"- {assignment['id']} {assignment['status']}: {assignment.get('abort_packet', {}).get('reason', 'blocked')}")
+    else:
+        print("- None")
+    print("Completed work:")
+    if state["completed_work"]:
+        for assignment in state["completed_work"]:
+            print(f"- {assignment['id']} -> {assignment['requirement_id']}")
+    else:
+        print("- None")
+    print("Pending work:")
+    if state["pending_work"]:
+        for requirement in state["pending_work"]:
+            print(f"- {requirement.get('id', '—')} {requirement.get('status', '—')}: {requirement.get('statement', '—')}")
+    else:
+        print("- None")
+    print("Clarifications:")
+    if clarifications:
+        for clarification in clarifications:
+            print(f"- {clarification.get('id', '—')} {clarification.get('status', '—')}: {clarification.get('question', '—')}")
+    else:
+        print("- None")
+    print(f"Recommendation: {state['recommendation']}")
 
 
 def assurance(args, cwd):
@@ -237,7 +328,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.1.5 clarification resolution governance")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.2.0 dispatcher runtime skeleton")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -248,13 +339,33 @@ def parser():
     p.add_argument("--answer", action="append", metavar="Q-ID=VALUE", help="Resolve a clarification; repeat as needed")
     p.add_argument("--reject", action="append", metavar="Q-ID=REASON", help="Reject a clarification; repeat as needed")
     p.add_argument("--supersede", action="append", metavar="Q-ID=VALUE", help="Supersede a clarification; repeat as needed")
-    commands.add_parser("dispatch"); commands.add_parser("assure"); commands.add_parser("report")
+    commands.add_parser("dispatch")
+    p = commands.add_parser("execute")
+    p.add_argument("--outcome", choices=sorted(RESULT_OUTCOMES), default="COMPLETE")
+    p.add_argument("--summary")
+    p.add_argument("--evidence", action="append", help="Evidence path reported by simulated execution; repeat for multiple paths")
+    p.add_argument("--failure-type", choices=sorted(FAILURE_TYPES), default="OTHER")
+    p.add_argument("--reason")
+    p.add_argument("--impact")
+    p.add_argument("--recommendation")
+    p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
+    commands.add_parser("status")
+    commands.add_parser("assure"); commands.add_parser("report")
     return result
 
 
 def main(argv=None, cwd=None):
     args = parser().parse_args(argv); cwd = Path.cwd() if cwd is None else Path(cwd)
-    {"init": init, "plan": plan, "clarify": clarify, "dispatch": dispatch, "assure": assurance, "report": report}[args.command](args, cwd)
+    {
+        "init": init,
+        "plan": plan,
+        "clarify": clarify,
+        "dispatch": dispatch,
+        "execute": execute,
+        "status": status,
+        "assure": assurance,
+        "report": report,
+    }[args.command](args, cwd)
 
 
 if __name__ == "__main__": main()
