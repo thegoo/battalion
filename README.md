@@ -1,6 +1,6 @@
-# Battalion v0.2.0 — Dispatcher Runtime Skeleton
+# Battalion v0.3.0 — Mission Assessment Engine
 
-Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, humans resolve clarification questions, Mission Assurance independently validates the contract, and the Dispatcher now owns sequential runtime assignment state.
+Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
 This slice does **not** execute autonomous agents, orchestrate models, call LLMs, provide a web UI, automate GitHub or CI/CD, run background workers, or use cloud/vector storage. `battalion execute` is a local simulation seam for future runners.
 
@@ -39,6 +39,7 @@ battalion init
 
 battalion plan
 battalion clarify
+battalion assess
 battalion assure
 battalion dispatch
 battalion execute
@@ -144,9 +145,52 @@ battalion plan --requirement "Validate JWT issuer" \
   --review tester
 ```
 
-Each generated review begins in `pending`. Run `battalion assure` after `plan` and `clarify` to validate the mission contract before runtime dispatch. At that point Assurance may still return AMBER / NO-GO because work, evidence, or reviews remain incomplete; that is expected. RED / NO-GO means the contract or audit trail is malformed and should be fixed before dispatch.
+Each generated review begins in `pending`. Run `battalion assess` after `plan` and `clarify` to evaluate whether enough engineering information exists to responsibly begin implementation. Mission Assessment is advisory and does not change mission state, create assignments, or dispatch work.
+
+Run `battalion assure` when you need the independent evidence/audit gate. At planning time Assurance may still return AMBER / NO-GO because work, evidence, or reviews remain incomplete; that is expected. RED / NO-GO means the contract or audit trail is malformed and should be fixed before dispatch.
 
 `dispatch` creates first-class runtime assignments; it does not execute or complete reviews. Run `battalion assure` again after execution evidence and reviews are recorded for the final GREEN / GO decision.
+
+## Mission Assessment
+
+```bash
+battalion assess
+```
+
+Mission Assessment answers:
+
+> Do we have sufficient information to responsibly begin the next engineering activity?
+
+It is distinct from Mission Assurance, which answers whether completed engineering work has enough evidence to be accepted.
+
+Assessment evaluates mission understanding, outstanding clarifications, assumptions, risks, engineering obligations, discipline findings, readiness, and the recommended next action. It never generates code, plans execution, creates assignments, dispatches work, or appends audit events.
+
+`battalion assess` writes two deterministic artifacts:
+
+- `.battalion/assessment.json` — canonical machine-readable assessment
+- `.battalion/assessment.md` — human-readable report rendered from the JSON
+
+Repeated assessment against unchanged mission inputs produces identical JSON and Markdown.
+
+Readiness levels are:
+
+- `NOT_READY`
+- `PARTIALLY_READY`
+- `READY_WITH_RISK`
+- `READY`
+
+Recommendations are selected deterministically from:
+
+- `Resolve Clarifications`
+- `Refine Requirements`
+- `Perform Architecture Review`
+- `Perform Security Review`
+- `Complete Mission Planning`
+- `Proceed to Implementation`
+
+Mission Assessment uses built-in Engineering Obligation Packs for Mission Analyst, Architect, Developer, Tester, SecOps, DevOps, SRE, and UX. Each obligation defines when it applies, required disposition, description, severity, and finding message. The implementation keeps obligation data separate from CLI handling so future organization-specific packs can be introduced without turning `battalion assess` into hardcoded prompt logic.
+
+Assessment initially infers mission attributes from the mission contract, including `PUBLIC_API`, `REST_API`, `DOCKER`, `AUTHENTICATION`, `DATABASE`, `USER_INTERFACE`, `CLI`, `BACKGROUND_PROCESS`, and `PUBLIC_ENDPOINT`.
 
 ## Dispatcher runtime
 
@@ -159,6 +203,8 @@ Runtime state is stored in `.battalion/assignments.yaml`. Assignment records inc
   "id": "ASG-001",
   "requirement_id": "R-001",
   "assigned_unit": "developer",
+  "assignment_type": "implementation",
+  "ownership": "owned",
   "status": "ASSIGNED",
   "scoped_context": {},
   "required_outputs": ["code changes", "implementation notes", "evidence references"],
@@ -170,7 +216,9 @@ Runtime state is stored in `.battalion/assignments.yaml`. Assignment records inc
 }
 ```
 
-Valid assignment states are `CREATED`, `ASSIGNED`, `EXECUTING`, `WAITING`, `COMPLETE`, `BLOCKED`, `FAILED`, and `ABORTED`. Only Dispatcher code changes assignment state, and every state change appends assignment history plus `events.jsonl` audit entries.
+Valid assignment states are `CREATED`, `ASSIGNED`, `EXECUTING`, `WAITING`, `BLOCKED`, `COMPLETE`, `FAILED`, and `ABORTED`. Only Dispatcher code changes assignment state, and every state change appends assignment history plus `events.jsonl` audit entries.
+
+Assignments remain owned by their assigned unit until the Dispatcher completes, reassigns, or aborts the work. `BLOCKED` and `WAITING` assignments remain active and keep the same assignment ID, scoped context, ownership, evidence, and audit history. A retry does not create a replacement assignment.
 
 ### Dispatch
 
@@ -182,6 +230,14 @@ battalion dispatch
 
 Scoped context is deliberately narrow. Developer assignments receive the assigned requirement, acceptance criteria, relevant constraints, resolved clarifications, and required evidence references. Mission Assurance and Dispatcher remain the only roles intended to receive full mission context.
 
+Dispatcher assignment order is lifecycle-aware:
+
+- Pending Architect reviews are dispatched before implementation.
+- Owner implementation is dispatched only after planning/design reviews are satisfied.
+- `battalion dispatch --allow-implementation-before-reviews` explicitly overrides that planning/design gate.
+- Tester review assignments are dispatched only after implementation evidence exists.
+- Requirements are not marked `completed` until implementation evidence exists and required reviews are complete.
+
 ### Execute
 
 ```bash
@@ -189,6 +245,16 @@ battalion execute --outcome COMPLETE --evidence evidence/asg-001.txt
 ```
 
 `execute` simulates unit execution. It does not call an LLM or external runner. It creates a result packet with one of: `COMPLETE`, `BLOCKED`, `FAILED`, `NEEDS_CLARIFICATION`, `NEEDS_SUPPORT`, or `ABORTED`. The Dispatcher consumes the packet and determines the next action.
+
+`COMPLETE` requires evidence. If a unit reports `COMPLETE` without evidence, the Dispatcher converts the result to `BLOCKED`, records an abort packet with `MISSING_CONTEXT`, and recommends retrying with evidence. Units cannot mark requirements complete by assertion.
+
+If an assignment is `BLOCKED` or `WAITING`, run `battalion execute` again with evidence to remediate the same assignment:
+
+```bash
+battalion execute --outcome COMPLETE --evidence evidence/asg-001.txt
+```
+
+The Dispatcher resumes the same assignment, accumulates the evidence, and re-evaluates it. The retry path emits `assignment_waiting`, `assignment_resumed`, and either `assignment_completed` or `assignment_failed`; it does not create `ASG-002` for the same work.
 
 Failure outcomes persist an abort packet:
 
@@ -214,7 +280,13 @@ battalion status
 
 `status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
 
-For v0.2.0, clarification decisions are recorded through `battalion clarify`. Run `battalion assure` immediately after clarification resolution to validate the contract before dispatching runtime work:
+For v0.3.0, clarification decisions are recorded through `battalion clarify`. Run `battalion assess` immediately after clarification resolution to evaluate implementation readiness:
+
+```bash
+battalion assess
+```
+
+Run `battalion assure` when you need to validate the contract and audit trail before dispatching runtime work:
 
 ```bash
 battalion assure
@@ -229,7 +301,7 @@ battalion report
 
 `report` writes `.battalion/reports/mission-report.md` and leaves human approval pending. Only a human can close the mission.
 
-If `plan`, `clarify`, `dispatch`, `execute`, `status`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
+If `plan`, `clarify`, `assess`, `dispatch`, `execute`, `status`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
 
 ## Requirement contract
 
@@ -277,7 +349,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.2.0. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.3.0. Battalion does not execute the reviewers.
 
 ## Audit validation
 

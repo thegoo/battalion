@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional
 from .storage import append_event, read_yaml, timestamp, write_yaml
 
 
-ASSIGNMENT_STATES = {"CREATED", "ASSIGNED", "EXECUTING", "WAITING", "COMPLETE", "BLOCKED", "FAILED", "ABORTED"}
-ACTIVE_ASSIGNMENT_STATES = {"CREATED", "ASSIGNED", "EXECUTING", "WAITING"}
+ASSIGNMENT_STATES = {"CREATED", "ASSIGNED", "EXECUTING", "WAITING", "COMPLETE", "BLOCKED", "FAILED", "ABORTED", "CLOSED"}
+ACTIVE_ASSIGNMENT_STATES = {"CREATED", "ASSIGNED", "EXECUTING", "WAITING", "BLOCKED"}
 RESULT_OUTCOMES = {"COMPLETE", "BLOCKED", "FAILED", "NEEDS_CLARIFICATION", "NEEDS_SUPPORT", "ABORTED"}
 DISPATCHER_ACTIONS = {
     "retry_assignment",
@@ -64,11 +64,52 @@ def _closed_requirement(requirement: Dict[str, Any]) -> bool:
 
 
 def _active_assignment(assignments: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    return next((item for item in assignments if item.get("status") in ACTIVE_ASSIGNMENT_STATES), None)
+    return next((item for item in assignments if item.get("status") in ACTIVE_ASSIGNMENT_STATES and item.get("ownership") != "released"), None)
 
 
 def _requirement_by_id(ledger: Dict[str, Any], requirement_id: str) -> Optional[Dict[str, Any]]:
     return next((item for item in ledger.get("requirements", []) if item.get("id") == requirement_id), None)
+
+
+def _completed_assignment(assignments: List[Dict[str, Any]], requirement_id: str, assignment_type: str, assigned_unit: Optional[str] = None) -> bool:
+    return any(
+        item.get("requirement_id") == requirement_id
+        and item.get("assignment_type") == assignment_type
+        and item.get("status") == "COMPLETE"
+        and (assigned_unit is None or item.get("assigned_unit") == assigned_unit)
+        for item in assignments
+    )
+
+
+def _implementation_evidence(requirement: Dict[str, Any], assignments: List[Dict[str, Any]]) -> List[str]:
+    evidence = list(requirement.get("evidence") or [])
+    for assignment in assignments:
+        if (
+            assignment.get("requirement_id") == requirement.get("id")
+            and assignment.get("assignment_type") == "implementation"
+            and assignment.get("status") == "COMPLETE"
+        ):
+            evidence.extend(assignment.get("evidence") or [])
+    return [item for item in evidence if isinstance(item, str) and item.strip()]
+
+
+def _pending_review(requirement: Dict[str, Any], reviewer: str) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            review for review in requirement.get("required_reviews", [])
+            if isinstance(review, dict)
+            and review.get("reviewer") == reviewer
+            and review.get("status") == "pending"
+        ),
+        None,
+    )
+
+
+def _pending_reviews(requirement: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        review for review in requirement.get("required_reviews", [])
+        if isinstance(review, dict) and review.get("status") == "pending"
+    ]
 
 
 def _relevant_constraints(ledger: Dict[str, Any], requirement: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -94,18 +135,21 @@ def _resolved_clarifications(ledger: Dict[str, Any], requirement: Dict[str, Any]
     ]
 
 
-def _required_outputs(unit: Dict[str, Any], requirement: Dict[str, Any]) -> List[str]:
+def _required_outputs(unit: Dict[str, Any], requirement: Dict[str, Any], assignment_type: str) -> List[str]:
     outputs = list(unit.get("required_outputs", []))
-    if requirement.get("owner") == "developer" and "evidence references" not in outputs:
+    if assignment_type == "implementation" and "evidence references" not in outputs:
         outputs.append("evidence references")
+    if assignment_type == "review" and "review evidence" not in outputs:
+        outputs.append("review evidence")
     return outputs
 
 
-def scoped_context(workspace: Path, requirement: Dict[str, Any], assigned_unit: str) -> Dict[str, Any]:
+def scoped_context(workspace: Path, requirement: Dict[str, Any], assigned_unit: str, assignment_type: str, review: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     ledger = read_yaml(workspace / "ledger.yaml")
     if assigned_unit in {"dispatcher", "mission_assurance"}:
         return {"mission_contract": ledger}
-    return {
+    context = {
+        "assignment_type": assignment_type,
         "requirement": {
             "id": requirement.get("id"),
             "statement": requirement.get("statement"),
@@ -119,21 +163,38 @@ def scoped_context(workspace: Path, requirement: Dict[str, Any], assigned_unit: 
         "resolved_clarifications": _resolved_clarifications(ledger, requirement),
         "required_evidence": requirement.get("evidence", []),
     }
+    if review is not None:
+        context["review"] = {
+            "reviewer": review.get("reviewer"),
+            "status": review.get("status"),
+            "reason": review.get("reason", ""),
+        }
+    return context
 
 
-def _create_assignment(workspace: Path, runtime: Dict[str, Any], requirement: Dict[str, Any]) -> Dict[str, Any]:
+def _create_assignment(
+    workspace: Path,
+    runtime: Dict[str, Any],
+    requirement: Dict[str, Any],
+    assigned_unit: str,
+    assignment_type: str,
+    review: Optional[Dict[str, Any]] = None,
+    dependencies: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     team = _team_by_id(workspace)
-    assigned_unit = requirement.get("owner") or "developer"
     if assigned_unit not in team:
         assigned_unit = "developer"
     assignment = {
         "id": _assignment_id(runtime["assignments"]),
         "requirement_id": requirement["id"],
         "assigned_unit": assigned_unit,
+        "assignment_type": assignment_type,
+        "reviewer": review.get("reviewer") if review else None,
+        "ownership": "owned",
         "status": "ASSIGNED",
-        "scoped_context": scoped_context(workspace, requirement, assigned_unit),
-        "required_outputs": _required_outputs(team.get(assigned_unit, {}), requirement),
-        "dependencies": [],
+        "scoped_context": scoped_context(workspace, requirement, assigned_unit, assignment_type, review),
+        "required_outputs": _required_outputs(team.get(assigned_unit, {}), requirement, assignment_type),
+        "dependencies": dependencies or [],
         "evidence": [],
         "result_packet": None,
         "abort_packet": None,
@@ -147,6 +208,8 @@ def _create_assignment(workspace: Path, runtime: Dict[str, Any], requirement: Di
         "assignment_id": assignment["id"],
         "requirement_id": requirement["id"],
         "assigned_unit": assigned_unit,
+        "assignment_type": assignment_type,
+        "reviewer": assignment["reviewer"],
     }, actor="dispatcher")
     append_event(workspace, "assignment_state_changed", {
         "assignment_id": assignment["id"],
@@ -156,7 +219,56 @@ def _create_assignment(workspace: Path, runtime: Dict[str, Any], requirement: Di
     return assignment
 
 
-def dispatch_next(workspace: Path) -> Dict[str, Any]:
+def _next_assignment_spec(
+    requirements: List[Dict[str, Any]],
+    assignments: List[Dict[str, Any]],
+    allow_implementation_before_reviews: bool,
+) -> Optional[Dict[str, Any]]:
+    for requirement in requirements:
+        if not isinstance(requirement, dict) or _closed_requirement(requirement):
+            continue
+        requirement_id = requirement.get("id")
+        if not isinstance(requirement_id, str):
+            continue
+        architect_review = _pending_review(requirement, "architect")
+        if architect_review and not allow_implementation_before_reviews:
+            return {
+                "requirement": requirement,
+                "assigned_unit": "architect",
+                "assignment_type": "review",
+                "review": architect_review,
+                "dependencies": [],
+            }
+        owner = requirement.get("owner") or "developer"
+        implementation_done = _completed_assignment(assignments, requirement_id, "implementation", owner) or bool(_implementation_evidence(requirement, assignments))
+        if not implementation_done:
+            return {
+                "requirement": requirement,
+                "assigned_unit": owner,
+                "assignment_type": "implementation",
+                "review": None,
+                "dependencies": [],
+            }
+        implementation_evidence = _implementation_evidence(requirement, assignments)
+        for review in _pending_reviews(requirement):
+            reviewer = review.get("reviewer")
+            if reviewer == "architect":
+                continue
+            if reviewer == "tester" and not implementation_evidence:
+                continue
+            return {
+                "requirement": requirement,
+                "assigned_unit": reviewer,
+                "assignment_type": "review",
+                "review": review,
+                "dependencies": [assignment["id"] for assignment in assignments if assignment.get("requirement_id") == requirement_id and assignment.get("assignment_type") == "implementation"],
+            }
+        if implementation_evidence and not _pending_reviews(requirement):
+            requirement["status"] = "completed"
+    return None
+
+
+def dispatch_next(workspace: Path, allow_implementation_before_reviews: bool = False) -> Dict[str, Any]:
     ledger = read_yaml(workspace / "ledger.yaml")
     runtime = load_assignments(workspace)
     active = _active_assignment(runtime["assignments"])
@@ -167,7 +279,7 @@ def dispatch_next(workspace: Path) -> Dict[str, Any]:
             "recommendation": "Execute or resolve the active assignment before dispatching more work.",
         }, actor="dispatcher")
         return {"assignment": active, "decision": "continue_active_assignment", "created": False}
-    blocker = next((item for item in runtime["assignments"] if item.get("status") in {"BLOCKED", "FAILED", "ABORTED"}), None)
+    blocker = next((item for item in runtime["assignments"] if item.get("status") in {"FAILED"} and item.get("ownership") != "released"), None)
     if blocker:
         append_event(workspace, "dispatcher_decision", {
             "action": "halt_for_blocker",
@@ -176,8 +288,9 @@ def dispatch_next(workspace: Path) -> Dict[str, Any]:
         }, actor="dispatcher")
         return {"assignment": blocker, "decision": "halt_for_blocker", "created": False}
 
-    requirement = next((item for item in ledger.get("requirements", []) if isinstance(item, dict) and not _closed_requirement(item)), None)
-    if requirement is None:
+    spec = _next_assignment_spec(ledger.get("requirements", []), runtime["assignments"], allow_implementation_before_reviews)
+    if spec is None:
+        write_yaml(workspace / "ledger.yaml", ledger)
         append_event(workspace, "dispatcher_decision", {
             "action": "no_dispatchable_work",
             "recommendation": "No open requirement is available for dispatch.",
@@ -185,8 +298,17 @@ def dispatch_next(workspace: Path) -> Dict[str, Any]:
         save_assignments(workspace, runtime)
         return {"assignment": None, "decision": "no_dispatchable_work", "created": False}
 
+    requirement = spec["requirement"]
     requirement["status"] = "in_progress"
-    assignment = _create_assignment(workspace, runtime, requirement)
+    assignment = _create_assignment(
+        workspace,
+        runtime,
+        requirement,
+        spec["assigned_unit"],
+        spec["assignment_type"],
+        spec["review"],
+        spec["dependencies"],
+    )
     write_yaml(workspace / "ledger.yaml", ledger)
     save_assignments(workspace, runtime)
     append_event(workspace, "dispatcher_decision", {
@@ -194,6 +316,8 @@ def dispatch_next(workspace: Path) -> Dict[str, Any]:
         "assignment_id": assignment["id"],
         "requirement_id": requirement["id"],
         "assigned_unit": assignment["assigned_unit"],
+        "assignment_type": assignment["assignment_type"],
+        "reviewer": assignment["reviewer"],
     }, actor="dispatcher")
     return {"assignment": assignment, "decision": "assign_requirement", "created": True}
 
@@ -210,6 +334,31 @@ def _transition(workspace: Path, assignment: Dict[str, Any], status: str, detail
         "to": status,
         "details": details or {},
     }, actor="dispatcher")
+    event_type = {
+        "EXECUTING": "assignment_started" if previous not in {"BLOCKED", "WAITING"} else "assignment_resumed",
+        "WAITING": "assignment_waiting",
+        "BLOCKED": "assignment_blocked",
+        "COMPLETE": "assignment_completed",
+        "FAILED": "assignment_failed",
+        "ABORTED": "assignment_aborted",
+    }.get(status)
+    if event_type:
+        append_event(workspace, event_type, {
+            "assignment_id": assignment["id"],
+            "requirement_id": assignment.get("requirement_id"),
+            "assigned_unit": assignment.get("assigned_unit"),
+            "from": previous,
+            "to": status,
+            "details": details or {},
+        }, actor="dispatcher")
+
+
+def _merge_evidence(existing: List[str], incoming: List[str]) -> List[str]:
+    merged = []
+    for value in list(existing or []) + list(incoming or []):
+        if isinstance(value, str) and value.strip() and value not in merged:
+            merged.append(value)
+    return merged
 
 
 def result_packet(assignment: Dict[str, Any], outcome: str, summary: str, evidence: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -258,24 +407,66 @@ def consume_result_packet(
     if decision_action is not None and decision_action not in DISPATCHER_ACTIONS:
         raise ValueError(f"invalid dispatcher action: {decision_action}")
 
-    _transition(workspace, assignment, "EXECUTING", {"outcome": packet["outcome"]})
+    retrying_existing_assignment = assignment.get("status") in {"BLOCKED", "WAITING"}
+    if assignment.get("status") == "BLOCKED":
+        _transition(workspace, assignment, "WAITING", {"reason": "retry requested"})
+    if assignment.get("status") == "WAITING":
+        _transition(workspace, assignment, "EXECUTING", {"outcome": packet["outcome"], "resumed": True})
+    else:
+        _transition(workspace, assignment, "EXECUTING", {"outcome": packet["outcome"]})
     assignment["result_packet"] = packet
-    assignment["evidence"] = packet.get("evidence", [])
+    assignment["evidence"] = _merge_evidence(assignment.get("evidence", []), packet.get("evidence", []))
     append_event(workspace, "result_packet_received", packet, actor=assignment["assigned_unit"])
 
     ledger = read_yaml(workspace / "ledger.yaml")
     requirement = _requirement_by_id(ledger, assignment["requirement_id"])
     decision: Dict[str, Any]
     if packet["outcome"] == "COMPLETE":
+        if not packet.get("evidence"):
+            packet["outcome"] = "BLOCKED"
+            packet["summary"] = "Dispatcher blocked COMPLETE because evidence is required."
+            assignment["result_packet"] = packet
+            assignment["abort_packet"] = abort_packet(
+                assignment,
+                "MISSING_CONTEXT",
+                "COMPLETE result packet did not include evidence.",
+                "Dispatcher cannot advance the requirement lifecycle without evidence.",
+                [],
+                "Provide evidence and retry the assignment.",
+            )
+            _transition(workspace, assignment, "BLOCKED", assignment["abort_packet"])
+            if requirement is not None:
+                requirement["status"] = "in_progress"
+            decision = {
+                "action": "retry_assignment",
+                "assignment_id": assignment["id"],
+                "recommendation": "Provide evidence and retry the assignment.",
+            }
+            write_yaml(workspace / "ledger.yaml", ledger)
+            save_assignments(workspace, runtime)
+            append_event(workspace, "dispatcher_decision", decision, actor="dispatcher")
+            return {"assignment": assignment, "decision": decision, "next_assignment": None}
         _transition(workspace, assignment, "COMPLETE", {"summary": packet.get("summary")})
+        assignment["ownership"] = "released"
+        assignment["closed_at"] = timestamp()
+        assignment["abort_packet"] = None
         if requirement is not None:
-            requirement["status"] = "completed"
-            if packet.get("evidence"):
-                requirement["evidence"] = packet["evidence"]
+            if assignment.get("assignment_type") == "review":
+                for review in requirement.get("required_reviews", []):
+                    if isinstance(review, dict) and review.get("reviewer") == assignment.get("reviewer"):
+                        review["status"] = "completed"
+                        review["evidence"] = packet["evidence"]
+                        break
+            elif assignment.get("assignment_type") == "implementation":
+                requirement["evidence"] = _merge_evidence(requirement.get("evidence", []), assignment.get("evidence", []))
+            if _implementation_evidence(requirement, runtime["assignments"]) and not _pending_reviews(requirement):
+                requirement["status"] = "completed"
+            else:
+                requirement["status"] = "in_progress"
         decision = {
-            "action": "dispatch_next_assignment",
+            "action": "complete_assignment" if retrying_existing_assignment else "dispatch_next_assignment",
             "assignment_id": assignment["id"],
-            "recommendation": "Dispatch the next open requirement.",
+            "recommendation": "Assignment completed. Run battalion dispatch to assign the next requirement." if retrying_existing_assignment else "Dispatch the next open requirement.",
         }
     elif packet["outcome"] == "BLOCKED":
         _transition(workspace, assignment, "BLOCKED", {"summary": packet.get("summary")})
@@ -307,6 +498,8 @@ def consume_result_packet(
             recommendation or "Escalate to a human mission owner.",
         )
         _transition(workspace, assignment, "ABORTED", assignment["abort_packet"])
+        assignment["ownership"] = "released"
+        assignment["closed_at"] = timestamp()
         decision = {
             "action": decision_action or "abort_mission",
             "assignment_id": assignment["id"],
@@ -330,7 +523,7 @@ def consume_result_packet(
     append_event(workspace, "dispatcher_decision", decision, actor="dispatcher")
 
     next_assignment = None
-    if packet["outcome"] == "COMPLETE":
+    if packet["outcome"] == "COMPLETE" and not retrying_existing_assignment:
         next_assignment = dispatch_next(workspace).get("assignment")
     return {"assignment": assignment, "decision": decision, "next_assignment": next_assignment}
 

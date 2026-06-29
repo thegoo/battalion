@@ -1,3 +1,3 @@
-"""Battalion v0.2.0 dispatcher runtime skeleton."""
+"""Battalion v0.3.0 mission assessment engine."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

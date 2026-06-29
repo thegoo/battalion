@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from .agents import standing_team
+from .assessment import write_assessment
 from .assurance import assure
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
@@ -213,7 +214,7 @@ def clarify(args, cwd):
 def dispatch(args, cwd):
     workspace = workspace_or_exit(cwd)
     try:
-        result = dispatch_next(workspace)
+        result = dispatch_next(workspace, allow_implementation_before_reviews=args.allow_implementation_before_reviews)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     assignment = result["assignment"]
@@ -228,6 +229,9 @@ def dispatch(args, cwd):
     print(f"{action} assignment {assignment['id']}")
     print(f"Requirement: {assignment['requirement_id']}")
     print(f"Unit: {assignment['assigned_unit']}")
+    print(f"Type: {assignment['assignment_type']}")
+    if assignment.get("reviewer"):
+        print(f"Reviewer: {assignment['reviewer']}")
     print(f"Status: {assignment['status']}")
     print(f"Decision: {result['decision']}")
 
@@ -305,6 +309,18 @@ def status(args, cwd):
     print(f"Recommendation: {state['recommendation']}")
 
 
+def assessment(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    try:
+        result = write_assessment(workspace)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Readiness: {result['readiness']}")
+    print(f"Recommendation: {result['recommendation']}")
+    print(f"Assessment JSON: {workspace / 'assessment.json'}")
+    print(f"Assessment Report: {workspace / 'assessment.md'}")
+
+
 def assurance(args, cwd):
     workspace = workspace_or_exit(cwd)
     result = assure(workspace)
@@ -328,7 +344,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.2.0 dispatcher runtime skeleton")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.3.0 mission assessment engine")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -339,7 +355,8 @@ def parser():
     p.add_argument("--answer", action="append", metavar="Q-ID=VALUE", help="Resolve a clarification; repeat as needed")
     p.add_argument("--reject", action="append", metavar="Q-ID=REASON", help="Reject a clarification; repeat as needed")
     p.add_argument("--supersede", action="append", metavar="Q-ID=VALUE", help="Supersede a clarification; repeat as needed")
-    commands.add_parser("dispatch")
+    p = commands.add_parser("dispatch")
+    p.add_argument("--allow-implementation-before-reviews", action="store_true", help="Explicitly allow owner implementation before planning/design reviews are completed")
     p = commands.add_parser("execute")
     p.add_argument("--outcome", choices=sorted(RESULT_OUTCOMES), default="COMPLETE")
     p.add_argument("--summary")
@@ -350,6 +367,7 @@ def parser():
     p.add_argument("--recommendation")
     p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
     commands.add_parser("status")
+    commands.add_parser("assess")
     commands.add_parser("assure"); commands.add_parser("report")
     return result
 
@@ -363,6 +381,7 @@ def main(argv=None, cwd=None):
         "dispatch": dispatch,
         "execute": execute,
         "status": status,
+        "assess": assessment,
         "assure": assurance,
         "report": report,
     }[args.command](args, cwd)

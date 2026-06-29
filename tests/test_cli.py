@@ -96,7 +96,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.2.0", output.getvalue())
+        self.assertIn("Battalion v0.3.0", output.getvalue())
 
     def test_interactive_init_captures_and_stores_mission_prompt(self):
         mission_prompt = "Build a hello world REST API."
@@ -440,6 +440,7 @@ class BattalionCliTests(unittest.TestCase):
         commands = (
             ["plan", "--requirement", "Example"],
             ["clarify"],
+            ["assess"],
             ["dispatch"],
             ["execute"],
             ["status"],
@@ -467,6 +468,7 @@ class BattalionCliTests(unittest.TestCase):
                     "--review", "architect",
                 ])
                 main(["dispatch"])
+                main(["assess"])
                 main(["assure"])
                 main(["report"])
         finally:
@@ -474,6 +476,95 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue((outside_repository / ".battalion" / "mission.yaml").is_file())
         self.assertTrue((outside_repository / ".battalion" / "reports" / "mission-report.md").is_file())
         self.assertIn("Status: AMBER", assurance_output.getvalue())
+
+    def test_assessment_generates_json_and_markdown(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        output = self.run_cli("assess")
+        self.assertIn("Readiness: NOT_READY", output)
+        self.assertIn("Recommendation: Resolve Clarifications", output)
+        assessment_json = self.workspace / "assessment.json"
+        assessment_md = self.workspace / "assessment.md"
+        self.assertTrue(assessment_json.is_file())
+        self.assertTrue(assessment_md.is_file())
+        assessment = json.loads(assessment_json.read_text(encoding="utf-8"))
+        self.assertEqual(assessment["schema_version"], "battalion.assessment.v1")
+        self.assertEqual(assessment["readiness"], "NOT_READY")
+        self.assertEqual(assessment["recommendation"], "Resolve Clarifications")
+        self.assertIn("REST_API", assessment["mission_attributes"])
+        self.assertIn("DOCKER", assessment["mission_attributes"])
+        self.assertTrue(assessment["discipline_findings"])
+        markdown = assessment_md.read_text(encoding="utf-8")
+        for heading in (
+            "## Mission", "## Assessment Summary", "## Readiness", "## Mission Attributes",
+            "## Outstanding Clarifications", "## Assumptions", "## Risks",
+            "## Engineering Obligation Summary", "## Discipline Findings",
+            "## Recommendation", "## Next Engineering Activity", "## Timestamp", "## Schema Version",
+        ):
+            self.assertIn(heading, markdown)
+
+    def test_assessment_is_deterministic_for_unchanged_mission(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        self.run_cli("assess")
+        first_json = (self.workspace / "assessment.json").read_text(encoding="utf-8")
+        first_markdown = (self.workspace / "assessment.md").read_text(encoding="utf-8")
+        self.run_cli("assess")
+        self.assertEqual(first_json, (self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(first_markdown, (self.workspace / "assessment.md").read_text(encoding="utf-8"))
+
+    def test_assessment_changes_when_mission_state_changes(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        self.run_cli("assess")
+        before = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+            "--answer", "Q-004=OWASP API Security Top 10 2023",
+        )
+        self.run_cli("assess")
+        after = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(before["readiness"], "NOT_READY")
+        self.assertNotEqual(before["readiness"], after["readiness"])
+        self.assertEqual(after["readiness"], "READY_WITH_RISK")
+        self.assertEqual(after["recommendation"], "Proceed to Implementation")
+
+    def test_assessment_readiness_rules_for_missing_requirements_and_acceptance(self):
+        self.initialize()
+        self.run_cli("assess")
+        empty = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(empty["readiness"], "NOT_READY")
+        self.assertEqual(empty["recommendation"], "Refine Requirements")
+        self.plan_contract(acceptance=False)
+        self.run_cli("assess")
+        missing_acceptance = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(missing_acceptance["readiness"], "NOT_READY")
+        self.assertEqual(missing_acceptance["recommendation"], "Refine Requirements")
+
+    def test_assessment_evaluates_obligation_findings_and_recommendation(self):
+        self.initialize_with_prompt("Build a public REST API endpoint.")
+        self.run_cli("plan")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/public", "--answer", "Q-002=Fastify")
+        self.run_cli("assess")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        secops_findings = [item for item in assessment["discipline_findings"] if item["discipline"] == "SecOps" and item["status"] == "NEEDS_CLARIFICATION"]
+        self.assertTrue(secops_findings)
+        self.assertEqual(assessment["readiness"], "PARTIALLY_READY")
+        self.assertEqual(assessment["recommendation"], "Perform Security Review")
+
+    def test_assessment_does_not_mutate_mission_contract_or_audit(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("plan")
+        before_mission = (self.workspace / "mission.yaml").read_text(encoding="utf-8")
+        before_ledger = (self.workspace / "ledger.yaml").read_text(encoding="utf-8")
+        before_events = (self.workspace / "events.jsonl").read_text(encoding="utf-8")
+        self.run_cli("assess")
+        self.assertEqual(before_mission, (self.workspace / "mission.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(before_ledger, (self.workspace / "ledger.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(before_events, (self.workspace / "events.jsonl").read_text(encoding="utf-8"))
 
     def test_plan_creates_contract_and_dispatch_updates_audit(self):
         self.initialize()
@@ -487,7 +578,9 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0]["id"], "ASG-001")
         self.assertEqual(assignments[0]["requirement_id"], "R-001")
-        self.assertEqual(assignments[0]["assigned_unit"], "mission_analyst")
+        self.assertEqual(assignments[0]["assigned_unit"], "architect")
+        self.assertEqual(assignments[0]["assignment_type"], "review")
+        self.assertEqual(assignments[0]["reviewer"], "architect")
         self.assertEqual(assignments[0]["status"], "ASSIGNED")
         events = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         self.assertIn("requirement_added", events)
@@ -495,36 +588,140 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("assignment_created", events)
         self.assertIn("dispatcher_decision", events)
 
-    def test_dispatcher_creates_developer_assignment_for_generated_contract(self):
+    def test_dispatcher_creates_architect_review_before_developer_assignment(self):
         self.initialize_with_prompt("Create a simple REST API.")
         self.run_cli("plan")
         output = self.run_cli("dispatch")
         assignment = load_assignments(self.workspace)["assignments"][0]
         self.assertIn("Created assignment ASG-001", output)
-        self.assertEqual(assignment["assigned_unit"], "developer")
+        self.assertEqual(assignment["assigned_unit"], "architect")
+        self.assertEqual(assignment["assignment_type"], "review")
+        self.assertEqual(assignment["reviewer"], "architect")
         self.assertEqual(assignment["status"], "ASSIGNED")
         self.assertEqual(assignment["scoped_context"]["requirement"]["id"], assignment["requirement_id"])
         self.assertNotIn("mission_contract", assignment["scoped_context"])
         self.assertIn("acceptance", assignment["scoped_context"]["requirement"])
+        self.assertIn("review evidence", assignment["required_outputs"])
+
+    def test_developer_assignment_waits_for_architect_review_unless_explicitly_allowed(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch", "--allow-implementation-before-reviews")
+        assignment = load_assignments(self.workspace)["assignments"][0]
+        self.assertEqual(assignment["assigned_unit"], "developer")
+        self.assertEqual(assignment["assignment_type"], "implementation")
         self.assertIn("evidence references", assignment["required_outputs"])
 
     def test_execute_complete_transitions_assignment_and_dispatches_next(self):
         self.initialize_with_prompt("Create a simple REST API.")
         self.run_cli("plan")
         self.run_cli("dispatch")
-        evidence = self.cwd / "evidence" / "asg-001.txt"
+        evidence = self.cwd / "evidence" / "asg-001-review.txt"
         evidence.parent.mkdir()
-        evidence.write_text("simulated complete\n", encoding="utf-8")
-        output = self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/asg-001.txt")
+        evidence.write_text("architect review complete\n", encoding="utf-8")
+        output = self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/asg-001-review.txt")
         assignments = load_assignments(self.workspace)["assignments"]
         self.assertEqual(assignments[0]["status"], "COMPLETE")
         self.assertEqual(assignments[0]["result_packet"]["outcome"], "COMPLETE")
-        self.assertEqual(assignments[0]["evidence"], ["evidence/asg-001.txt"])
+        self.assertEqual(assignments[0]["evidence"], ["evidence/asg-001-review.txt"])
         self.assertEqual(assignments[1]["status"], "ASSIGNED")
+        self.assertEqual(assignments[1]["assigned_unit"], "developer")
+        self.assertEqual(assignments[1]["assignment_type"], "implementation")
         self.assertIn("Next Assignment: ASG-002", output)
         ledger = read_yaml(self.ledger_path)
-        self.assertEqual(ledger["requirements"][0]["status"], "completed")
-        self.assertEqual(ledger["requirements"][0]["evidence"], ["evidence/asg-001.txt"])
+        self.assertEqual(ledger["requirements"][0]["status"], "in_progress")
+        self.assertEqual(ledger["requirements"][0]["required_reviews"][0]["status"], "completed")
+        self.assertEqual(ledger["requirements"][0]["evidence"], [])
+
+    def test_execute_complete_without_evidence_blocks_instead_of_completing(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        output = self.run_cli("execute", "--outcome", "COMPLETE")
+        assignment = load_assignments(self.workspace)["assignments"][0]
+        requirement = read_yaml(self.ledger_path)["requirements"][0]
+        self.assertEqual(assignment["status"], "BLOCKED")
+        self.assertEqual(assignment["result_packet"]["outcome"], "BLOCKED")
+        self.assertEqual(assignment["abort_packet"]["failure_type"], "MISSING_CONTEXT")
+        self.assertEqual(requirement["status"], "in_progress")
+        self.assertNotEqual(requirement["status"], "completed")
+        self.assertIn("Dispatcher Decision: retry_assignment", output)
+
+    def test_blocked_assignment_remains_active_for_evidence_retry(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        self.run_cli("execute", "--outcome", "COMPLETE")
+        blocked = load_assignments(self.workspace)["assignments"][0]
+        self.assertEqual(blocked["id"], "ASG-001")
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertEqual(blocked["ownership"], "owned")
+
+        dispatch_output = self.run_cli("dispatch")
+        self.assertIn("Continuing assignment ASG-001", dispatch_output)
+        self.assertEqual(len(load_assignments(self.workspace)["assignments"]), 1)
+
+        retry_output = self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/asg-001.txt")
+        assignments = load_assignments(self.workspace)["assignments"]
+        assignment = assignments[0]
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignment["id"], "ASG-001")
+        self.assertEqual(assignment["status"], "COMPLETE")
+        self.assertEqual(assignment["ownership"], "released")
+        self.assertEqual(assignment["evidence"], ["evidence/asg-001.txt"])
+        self.assertNotIn("Next Assignment", retry_output)
+        self.assertEqual([entry["status"] for entry in assignment["audit_history"]], [
+            "CREATED", "ASSIGNED", "EXECUTING", "BLOCKED", "WAITING", "EXECUTING", "COMPLETE",
+        ])
+        event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        for event_type in ("assignment_started", "assignment_blocked", "assignment_waiting", "assignment_resumed", "assignment_completed"):
+            self.assertIn(event_type, event_types)
+
+    def test_waiting_assignment_remains_active_for_reexecution(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        self.run_cli("execute", "--outcome", "NEEDS_CLARIFICATION")
+        waiting = load_assignments(self.workspace)["assignments"][0]
+        self.assertEqual(waiting["status"], "WAITING")
+        self.assertEqual(waiting["ownership"], "owned")
+
+        self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/waiting-retry.txt")
+        assignments = load_assignments(self.workspace)["assignments"]
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0]["id"], "ASG-001")
+        self.assertEqual(assignments[0]["status"], "COMPLETE")
+        self.assertEqual(assignments[0]["evidence"], ["evidence/waiting-retry.txt"])
+
+    def test_aborted_assignment_releases_ownership(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        self.run_cli("execute", "--outcome", "ABORTED", "--reason", "Human stopped work")
+        assignment = load_assignments(self.workspace)["assignments"][0]
+        self.assertEqual(assignment["status"], "ABORTED")
+        self.assertEqual(assignment["ownership"], "released")
+        event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        self.assertIn("assignment_aborted", event_types)
+
+    def test_tester_review_waits_for_implementation_evidence(self):
+        self.initialize_with_prompt("Create a simple REST API.")
+        self.run_cli("plan")
+        self.run_cli("dispatch")
+        self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/r1-architect.txt")
+        self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/r1-implementation.txt")
+        self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/r2-architect.txt")
+        assignments = load_assignments(self.workspace)["assignments"]
+        self.assertEqual(assignments[-1]["assigned_unit"], "developer")
+        self.assertEqual(assignments[-1]["assignment_type"], "implementation")
+        self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/r2-implementation.txt")
+        tester_assignment = load_assignments(self.workspace)["assignments"][-1]
+        self.assertEqual(tester_assignment["assigned_unit"], "tester")
+        self.assertEqual(tester_assignment["assignment_type"], "review")
+        self.assertEqual(tester_assignment["reviewer"], "tester")
+        ledger = read_yaml(self.ledger_path)
+        self.assertEqual(ledger["requirements"][1]["evidence"], ["evidence/r2-implementation.txt"])
+        self.assertEqual(ledger["requirements"][1]["status"], "in_progress")
 
     def test_execute_failed_persists_abort_packet_and_halts_dispatch(self):
         self.initialize_with_prompt("Create a simple REST API.")
