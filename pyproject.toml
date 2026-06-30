@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "battalion-cli"
-version = "0.1.5"
-description = "Deterministic mission contracts with audited clarification resolution"
+version = "0.3.2"
+description = "Deterministic mission assessment before execution planning"
 requires-python = ">=3.9"
 
 [project.scripts]

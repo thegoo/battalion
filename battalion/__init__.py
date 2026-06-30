@@ -1,3 +1,3 @@
-"""Battalion v0.1.5 clarification resolution workflow."""
+"""Battalion v0.3.2 init-assess-plan workflow."""
 
-__version__ = "0.1.5"
+__version__ = "0.3.2"

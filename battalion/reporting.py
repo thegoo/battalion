@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from .assurance import assure
+from .dispatcher import load_assignments
 from .storage import read_yaml
 
 
@@ -45,6 +46,18 @@ def render_report(workspace: Path) -> str:
     ledger = read_yaml(workspace / "ledger.yaml")
     requirements = ledger["requirements"]
     result = assure(workspace)
+    try:
+        runtime = load_assignments(workspace)
+    except ValueError:
+        runtime = {"assignments": []}
+    assignment_lines = []
+    for assignment in runtime.get("assignments", []):
+        if not isinstance(assignment, dict):
+            continue
+        assignment_lines.append(
+            f"{assignment.get('id', '—')} [{assignment.get('status', '—')}] "
+            f"{assignment.get('assigned_unit', '—')} -> {assignment.get('requirement_id', '—')}"
+        )
     rows = [
         "| ID | Requirement | Status | Owner | Acceptance | Evidence | Required Reviews |",
         "|---|---|---|---|---|---|---|",
@@ -149,6 +162,10 @@ def render_report(workspace: Path) -> str:
 ## Review Summary
 
 {bullet(reviews)}
+
+## Runtime Assignments
+
+{bullet(assignment_lines)}
 
 ## Assumptions
 

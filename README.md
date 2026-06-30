@@ -1,8 +1,8 @@
-# Battalion v0.1.5 — Clarification Resolution Workflow
+# Battalion v0.3.2 — Correct Init → Assess → Plan Workflow
 
-Battalion is a deterministic, local mission-governance layer for software delivery. Mission Analyst asks traceable clarification questions, humans resolve them through the CLI, and the mission contract reconciles those decisions into existing requirements without duplication.
+Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
-This slice does **not** execute autonomous agents, orchestrate models, call LLMs, provide a web UI, automate GitHub or CI/CD, run background workers, or use cloud/vector storage.
+This slice does **not** execute autonomous agents, orchestrate models, call LLMs, provide a web UI, automate GitHub or CI/CD, run background workers, or use cloud/vector storage. `battalion execute` is a local simulation seam for future runners.
 
 ## Development installation
 
@@ -34,40 +34,57 @@ mkdir -p ~/tmp/hello-world
 cd ~/tmp/hello-world
 
 battalion init
-# Prompt: Describe the mission:
+# Prompt: Mission title:
+# Enter: Hello World REST API
+# Prompt: Mission objective:
+# Enter: Build a simple REST API with a single health check endpoint.
+# Prompt: Mission prompt:
 # Enter: Build a hello world REST API.
 
+battalion assess
 battalion plan
-battalion clarify
 battalion dispatch
+battalion execute
+battalion status
 battalion assure
 battalion report
 ```
 
 Every command locates `.battalion` relative to the current working directory. The repository root, manual imports, custom aliases, and `PYTHONPATH` are not required.
 
-`init` captures the mission prompt and creates `.battalion/mission.yaml`, `agents.yaml`, `ledger.yaml`, `events.jsonl`, and `reports/`. The prompt is stored as `mission_prompt` in both the mission record and initial ledger and is the authoritative source of mission intent. For non-interactive use:
+`init` captures the mission title, objective, and prompt, then creates `.battalion/mission.yaml`, `agents.yaml`, `ledger.yaml`, `events.jsonl`, and `reports/`. It does not require requirements yet. The prompt is stored as `mission_prompt` in both the mission record and initial ledger and is the authoritative source of mission intent. For non-interactive use:
 
 ```bash
-battalion init --prompt "Build a hello world REST API."
+battalion init \
+  --title "Hello World REST API" \
+  --objective "Build a simple REST API with a single health check endpoint." \
+  --prompt "Build a hello world REST API."
 ```
 
 The `.yaml` files use JSON syntax, which is valid YAML 1.2 and keeps the CLI dependency-free.
 
-## Mission Analyst planning
+## Mission Assessment as the front door
 
-Running `battalion plan` without arguments activates the deterministic Mission Analyst. It extracts explicit prompt constraints before creating work. For example:
+The primary MVP workflow is:
+
+```bash
+battalion init
+battalion assess
+battalion plan
+```
+
+`assess` is the first command that understands the mission. If the ledger does not yet contain requirements, `battalion assess` invokes the deterministic Mission Analyst to generate or refresh the mission contract directly from the immutable mission prompt. For example:
 
 ```bash
 battalion init --prompt "Build a TypeScript Node REST API running in Docker with a health endpoint. Allow GET requests only. Follow OWASP guidance. Create happy-path, negative-path, and malicious-request tests."
-battalion plan
+battalion assess
 ```
 
 This contract includes distinct requirements for the TypeScript/Node application, health endpoint, Docker packaging, GET-only enforcement, secure error handling, explicitly requested test scenarios, and documentation.
 
 Every generated requirement contains non-empty acceptance criteria, an implementation owner, one or more pending standing-team reviews, and prompt traceability explaining why it exists. Review records include a reason explaining the recommendation. The ledger also contains categorized constraints, low-risk assumptions, risks, and clarification questions with stable IDs.
 
-The resulting `.battalion/ledger.yaml` is the initial mission contract and source of truth. `battalion plan` prints the generated contract for human review, and `battalion report` renders it with its prompt, criteria, assumptions, risks, and reviews.
+The resulting `.battalion/ledger.yaml` is the mission contract and source of truth. `battalion assess` writes the contract, evaluates readiness, and renders `.battalion/assessment.json` plus `.battalion/assessment.md`. `battalion report` renders the contract with its prompt, criteria, assumptions, risks, and reviews.
 
 Generation is local and rule-based. The Mission Analyst does not call an LLM, write code, execute reviews, modify implementation, approve risk, or close the mission.
 
@@ -102,7 +119,7 @@ Open clarifications keep Mission Assurance at AMBER / NO-GO; terminal clarificat
 
 ## Clarification resolution
 
-Run the interactive workflow after planning:
+Open clarifications are part of assessment readiness. You can resolve them directly during `battalion assess` in an interactive terminal, or use the standalone clarification workflow:
 
 ```bash
 battalion clarify
@@ -131,6 +148,14 @@ Resolution refines requirements in place. For the example above, the contract se
 
 Every lifecycle transition appends both contract history and an audit event: `clarification_created`, `clarification_resolved`, `clarification_superseded`, or `clarification_rejected`. Reconciliation emits `mission_contract_reconciled`. This keeps human decisions reconstructable while preserving a schema future agent implementations can consume.
 
+If `assess` runs non-interactively and open clarifications exist, Battalion does not pretend readiness is final. It prints:
+
+```text
+Clarifications are required before readiness can be finalized. Run battalion clarify.
+```
+
+Skipped clarification answers remain `open`; readiness remains `NOT_READY` and the recommendation remains `Resolve Clarifications`.
+
 Manual requirement entry remains available when needed:
 
 ```bash
@@ -141,9 +166,174 @@ battalion plan --requirement "Validate JWT issuer" \
   --review tester
 ```
 
-Each generated review begins in `pending`. `dispatch` records a simulated dispatch and advances proposed requirements to `planned`; it does not execute or complete reviews. Assurance therefore returns AMBER / NO-GO after initial planning and dispatch because execution and reviews remain incomplete—not because planning artifacts are missing.
+Each generated review begins in `pending`. Run `battalion assess` after `init` to evaluate whether enough engineering information exists to responsibly begin implementation. Mission Assessment may generate or reconcile the mission contract and clarification decisions, but it does not generate code, create runtime assignments, dispatch work, or approve completed work.
 
-For v0.1.5, clarification decisions are recorded through `battalion clarify`. Implementation outcomes and review decisions remain recorded in `ledger.yaml`: complete reviews, set requirement status, and add project-relative evidence paths. Then run:
+Run `battalion plan` after assessment to produce the execution-ready mission plan. Run `battalion assure` only when you need the independent evidence/audit gate. At planning time Assurance may still return AMBER / NO-GO because work, evidence, or reviews remain incomplete; that is expected. RED / NO-GO means the contract or audit trail is malformed and should be fixed before dispatch.
+
+`dispatch` creates first-class runtime assignments; it does not execute or complete reviews. Run `battalion assure` again after execution evidence and reviews are recorded for the final GREEN / GO decision.
+
+## Mission Assessment
+
+```bash
+battalion assess
+```
+
+Mission Assessment answers:
+
+> Do we have sufficient information to responsibly begin the next engineering activity?
+
+It is distinct from Mission Assurance, which answers whether completed engineering work has enough evidence to be accepted.
+
+Assessment evaluates mission understanding, outstanding clarifications, assumptions, risks, engineering obligations, discipline findings, readiness, and the recommended next action. If requirements are missing, it generates the mission contract from the prompt first. It never generates code, creates runtime assignments, dispatches work, or approves completed work.
+
+`battalion assess` writes two deterministic artifacts:
+
+- `.battalion/assessment.json` — canonical machine-readable assessment
+- `.battalion/assessment.md` — human-readable report rendered from the JSON
+
+Repeated assessment against unchanged mission inputs produces identical CLI output, JSON, and Markdown.
+
+Readiness levels are:
+
+- `NOT_READY`
+- `PARTIALLY_READY`
+- `READY_WITH_RISK`
+- `READY`
+
+Recommendations are selected deterministically from:
+
+- `Resolve Clarifications`
+- `Refine Requirements`
+- `Perform Architecture Review`
+- `Perform Security Review`
+- `Complete Mission Planning`
+- `Proceed to Implementation`
+
+Every readiness result includes `readiness_reason`, and every recommendation includes `recommendation_reason`. The CLI prints both, the Markdown report expands both, and `assessment.json` stores both for future Mission Planning and Dispatcher slices.
+
+Mission Assessment uses built-in Engineering Obligation Packs for Mission Analyst, Architect, Developer, Tester, SecOps, DevOps, SRE, and UX. Each obligation defines when it applies, required disposition, description, severity, category, and finding message. Only applicable obligations appear in the assessment. The implementation keeps obligation data separate from CLI handling so future organization-specific packs can be introduced without turning `battalion assess` into hardcoded prompt logic.
+
+Assessment infers mission attributes from the mission contract, constraints, requirements, and resolved clarifications. Attributes include `REST_API`, `HTTP_ENDPOINT`, `PUBLIC_ENDPOINT`, `PUBLIC_API`, `GET_ONLY`, `NODE`, `TYPESCRIPT`, `DOCKER`, `SECURE_ERROR_HANDLING`, `TESTING_REQUIRED`, `MALICIOUS_TESTING`, `AUTHENTICATION`, `DATABASE`, `USER_INTERFACE`, `CLI`, and `BACKGROUND_PROCESS`. `assessment.json` also records `attribute_sources`.
+
+Risks are categorized deterministically as Security, Architecture, Operational, Implementation, or Documentation. If a clarification resolves a previously unknown item, the assessment marks the corresponding risk as resolved in `resolved_risks` instead of continuing to present it as an open contradiction. The canonical JSON also includes `resolved_assumptions` and `finding_categories`.
+
+## Mission planning
+
+```bash
+battalion plan
+```
+
+`plan` consumes `.battalion/assessment.json` and the assessed mission contract. It turns assessment output into `.battalion/mission-plan.md`, an execution-ready markdown plan containing the mission, readiness, recommendation rationale, requirements, acceptance criteria, required reviews, clarifications, assumptions, risks, constraints, and next execution steps.
+
+Planning depends on assessment. If no assessment exists, Battalion exits cleanly with:
+
+```text
+No mission assessment exists. Run battalion assess first.
+```
+
+`plan` does not regenerate unrelated or contradictory requirements. Manual requirement entry remains available through `battalion plan --requirement ...` for compatibility and direct contract editing, but the primary documented workflow is `init → assess → plan`.
+
+## Dispatcher runtime
+
+The Dispatcher is the only authority allowed to advance runtime execution. Units do not mark missions complete, queue additional work, approve themselves, or skip requirements. Units only report result packets; the Dispatcher consumes those packets and decides the next action.
+
+Runtime state is stored in `.battalion/assignments.yaml`. Assignment records include:
+
+```json
+{
+  "id": "ASG-001",
+  "requirement_id": "R-001",
+  "assigned_unit": "developer",
+  "assignment_type": "implementation",
+  "ownership": "owned",
+  "status": "ASSIGNED",
+  "scoped_context": {},
+  "required_outputs": ["code changes", "implementation notes", "evidence references"],
+  "dependencies": [],
+  "evidence": [],
+  "result_packet": null,
+  "abort_packet": null,
+  "audit_history": []
+}
+```
+
+Valid assignment states are `CREATED`, `ASSIGNED`, `EXECUTING`, `WAITING`, `BLOCKED`, `COMPLETE`, `FAILED`, and `ABORTED`. Only Dispatcher code changes assignment state, and every state change appends assignment history plus `events.jsonl` audit entries.
+
+Assignments remain owned by their assigned unit until the Dispatcher completes, reassigns, or aborts the work. `BLOCKED` and `WAITING` assignments remain active and keep the same assignment ID, scoped context, ownership, evidence, and audit history. A retry does not create a replacement assignment.
+
+### Dispatch
+
+```bash
+battalion dispatch
+```
+
+`dispatch` reads the mission contract, finds the next non-final requirement, selects the required unit from the requirement owner, creates an assignment, scopes context, persists it, and emits audit events. Sequential execution is enforced: only one assignment may be active at a time. If failed, blocked, or aborted work exists, the Dispatcher halts instead of creating more work.
+
+Scoped context is deliberately narrow. Developer assignments receive the assigned requirement, acceptance criteria, relevant constraints, resolved clarifications, and required evidence references. Mission Assurance and Dispatcher remain the only roles intended to receive full mission context.
+
+Dispatcher assignment order is lifecycle-aware:
+
+- Pending Architect reviews are dispatched before implementation.
+- Owner implementation is dispatched only after planning/design reviews are satisfied.
+- `battalion dispatch --allow-implementation-before-reviews` explicitly overrides that planning/design gate.
+- Tester review assignments are dispatched only after implementation evidence exists.
+- Requirements are not marked `completed` until implementation evidence exists and required reviews are complete.
+
+### Execute
+
+```bash
+battalion execute --outcome COMPLETE --evidence evidence/asg-001.txt
+```
+
+`execute` simulates unit execution. It does not call an LLM or external runner. It creates a result packet with one of: `COMPLETE`, `BLOCKED`, `FAILED`, `NEEDS_CLARIFICATION`, `NEEDS_SUPPORT`, or `ABORTED`. The Dispatcher consumes the packet and determines the next action.
+
+`COMPLETE` requires evidence. If a unit reports `COMPLETE` without evidence, the Dispatcher converts the result to `BLOCKED`, records an abort packet with `MISSING_CONTEXT`, and recommends retrying with evidence. Units cannot mark requirements complete by assertion.
+
+If an assignment is `BLOCKED` or `WAITING`, run `battalion execute` again with evidence to remediate the same assignment:
+
+```bash
+battalion execute --outcome COMPLETE --evidence evidence/asg-001.txt
+```
+
+The Dispatcher resumes the same assignment, accumulates the evidence, and re-evaluates it. The retry path emits `assignment_waiting`, `assignment_resumed`, and either `assignment_completed` or `assignment_failed`; it does not create `ASG-002` for the same work.
+
+Failure outcomes persist an abort packet:
+
+```bash
+battalion execute \
+  --outcome FAILED \
+  --failure-type VALIDATION_FAILED \
+  --reason "Unit tests failed" \
+  --impact "Cannot validate requirement" \
+  --recommendation "Return work to Developer" \
+  --decision-action return_work_to_previous_unit
+```
+
+Failure types are `MISSING_CONTEXT`, `DEPENDENCY_MISSING`, `VALIDATION_FAILED`, `SECURITY_BLOCKER`, `TOOL_FAILURE`, `PERMISSION_DENIED`, `UNRECOVERABLE_ERROR`, and `OTHER`.
+
+Dispatcher decisions include dispatching the next assignment, retrying an assignment, returning work to a previous unit, requesting support, generating a clarification, escalating to a human, accepting risk, or aborting the mission. Every decision creates an audit event.
+
+### Status
+
+```bash
+battalion status
+```
+
+`status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
+
+For v0.3.2, clarification decisions can be recorded during interactive `battalion assess` or through `battalion clarify`. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
+
+```bash
+battalion assess
+```
+
+Run `battalion assure` when you need to validate the contract and audit trail before dispatching runtime work:
+
+```bash
+battalion assure
+```
+
+Runtime outcomes are recorded through `battalion dispatch` and `battalion execute`. Review decisions remain governance records in `ledger.yaml`: complete reviews and ensure project-relative evidence paths exist. Then run final assurance and reporting:
 
 ```bash
 battalion assure
@@ -152,7 +342,7 @@ battalion report
 
 `report` writes `.battalion/reports/mission-report.md` and leaves human approval pending. Only a human can close the mission.
 
-If `plan`, `clarify`, `dispatch`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
+If `plan`, `clarify`, `assess`, `dispatch`, `execute`, `status`, `assure`, or `report` is run outside a mission directory, Battalion exits without a traceback and explains how to run `battalion init` or navigate to a directory containing `.battalion`.
 
 ## Requirement contract
 
@@ -200,7 +390,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.1.5. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.3.2. Battalion does not execute the reviewers.
 
 ## Audit validation
 
