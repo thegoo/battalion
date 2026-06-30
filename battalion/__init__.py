@@ -1,3 +1,3 @@
-"""Battalion v0.3.0 mission assessment engine."""
+"""Battalion v0.3.2 init-assess-plan workflow."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.2"

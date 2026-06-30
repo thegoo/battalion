@@ -96,7 +96,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.3.0", output.getvalue())
+        self.assertIn("Battalion v0.3.2", output.getvalue())
 
     def test_interactive_init_captures_and_stores_mission_prompt(self):
         mission_prompt = "Build a hello world REST API."
@@ -110,7 +110,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_mission_analyst_generates_requirements(self):
         self.initialize()
-        output = self.run_cli("plan")
+        output = self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         self.assertEqual(ledger["generated_by"], "mission_analyst")
         self.assertGreaterEqual(len(ledger["requirements"]), 4)
@@ -118,7 +118,7 @@ class BattalionCliTests(unittest.TestCase):
             [requirement["id"] for requirement in ledger["requirements"]],
             [f"R-{index:03d}" for index in range(1, len(ledger["requirements"]) + 1)],
         )
-        self.assertIn("Mission Analyst generated the mission contract", output)
+        self.assertIn("Readiness:", output)
 
     def test_mission_analyst_generation_is_deterministic(self):
         prompt = "Build a hello world REST API."
@@ -130,14 +130,14 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_generated_requirements_have_acceptance_criteria(self):
         self.initialize()
-        self.run_cli("plan")
+        self.run_cli("assess")
         requirements = read_yaml(self.ledger_path)["requirements"]
         self.assertTrue(all(requirement["acceptance"] for requirement in requirements))
         self.assertTrue(all(all(criterion.strip() for criterion in requirement["acceptance"]) for requirement in requirements))
 
     def test_mission_analyst_generates_assumptions_and_risks(self):
         self.initialize()
-        self.run_cli("plan")
+        self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         self.assertEqual([item["id"] for item in ledger["assumptions"]], ["A-001"])
         self.assertTrue(ledger["risks"])
@@ -146,7 +146,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_technology_constraints_are_extracted(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         statements = [item["statement"] for item in ledger["constraints"]["technical"]]
         self.assertEqual(statements, ["TypeScript is required.", "Node.js is required.", "Docker packaging is required."])
@@ -156,7 +156,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_security_constraints_are_extracted(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         security = [item["statement"] for item in ledger["constraints"]["security"]]
         self.assertIn("Only GET requests are permitted.", security)
@@ -168,7 +168,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_explicit_testing_constraints_generate_test_acceptance(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         testing = [item["statement"] for item in ledger["constraints"]["testing"]]
         self.assertEqual(testing, [
@@ -183,7 +183,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_prompt_traceability_is_generated_for_every_requirement(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         constraint_ids = {
             item["id"]
@@ -199,7 +199,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_missing_information_generates_clarifications_not_framework_assumptions(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
         questions = [item["question"] for item in ledger["clarifications"]]
         self.assertIn("What endpoint path should be used?", questions)
@@ -211,7 +211,7 @@ class BattalionCliTests(unittest.TestCase):
     def test_mission_prompt_remains_immutable_during_contract_generation(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         before = (self.workspace / "mission.yaml").read_bytes()
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli("report")
         after = (self.workspace / "mission.yaml").read_bytes()
@@ -220,7 +220,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assurance_validates_trace_links_and_reports_open_clarifications(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         result = self.result()
         self.assertEqual((result.status, result.recommendation), ("AMBER", "NO-GO"))
         self.assertTrue(any("Q-001 remains open" in finding for finding in result.findings))
@@ -233,7 +233,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_completed_traceable_generated_contract_can_reach_green(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli(
             "clarify", "--resolver", "Jesse Williams",
             "--answer", "Q-001=/health",
@@ -256,7 +256,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_clarifications_can_be_resolved_and_reconcile_requirements(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         output = self.run_cli(
             "clarify", "--resolver", "Jesse Williams",
             "--answer", "Q-001=/health",
@@ -281,7 +281,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_clarification_resolution_creates_auditable_history(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
         clarification = read_yaml(self.ledger_path)["clarifications"][0]
         self.assertEqual([entry["action"] for entry in clarification["history"]], ["created", "resolved"])
@@ -299,7 +299,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assurance_rejects_clarification_history_without_matching_audit_event(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
         event_path = self.workspace / "events.jsonl"
         events = [json.loads(line) for line in event_path.read_text().splitlines()]
@@ -311,7 +311,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_resolved_clarifications_stop_contributing_assurance_findings(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         before = self.result()
         self.assertEqual(before.clarification_counts["open"], 4)
         self.assertEqual(before.clarification_counts["resolved"], 0)
@@ -331,7 +331,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_interactive_clarify_collects_human_answers(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         responses = iter(["/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
@@ -346,7 +346,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_interactive_clarify_blank_answer_leaves_clarification_open(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         responses = iter(["/health", "", "", "", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
@@ -363,7 +363,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_interactive_clarify_all_blank_answers_do_not_require_resolver(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         responses = iter(["", "", "", ""])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
@@ -375,7 +375,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_rejected_and_superseded_clarification_states_are_audited(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
         self.run_cli("clarify", "--resolver", "Jesse Williams", "--supersede", "Q-001=/status")
         self.run_cli("clarify", "--resolver", "Jesse Williams", "--reject", "Q-002=Framework selection deferred")
@@ -389,7 +389,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_mission_analyst_generates_explainable_review_assignments(self):
         self.initialize()
-        self.run_cli("plan")
+        self.run_cli("assess")
         requirements = read_yaml(self.ledger_path)["requirements"]
         for requirement in requirements:
             self.assertTrue(requirement["required_reviews"])
@@ -399,7 +399,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_generated_mission_contract_is_traceable_to_prompt(self):
         self.initialize()
-        self.run_cli("plan")
+        self.run_cli("assess")
         mission = read_yaml(self.workspace / "mission.yaml")
         ledger = read_yaml(self.ledger_path)
         self.assertEqual(ledger["mission_id"], mission["id"])
@@ -409,7 +409,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_generated_contract_is_visible_in_mission_report(self):
         self.initialize()
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("report")
         report = (self.workspace / "reports" / "mission-report.md").read_text(encoding="utf-8")
         self.assertIn("**Generated by:** mission_analyst", report)
@@ -423,7 +423,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assurance_consumes_generated_contract_as_incomplete_not_malformed(self):
         self.initialize()
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         result = self.result()
         self.assertEqual((result.status, result.recommendation), ("AMBER", "NO-GO"))
@@ -477,35 +477,100 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue((outside_repository / ".battalion" / "reports" / "mission-report.md").is_file())
         self.assertIn("Status: AMBER", assurance_output.getvalue())
 
+    def test_assess_works_immediately_after_init_and_generates_contract(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        output = self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        self.assertIn("Readiness:", output)
+        self.assertTrue(ledger["requirements"])
+        self.assertTrue(all(requirement["acceptance"] for requirement in ledger["requirements"]))
+        self.assertTrue(ledger["constraints"])
+        self.assertTrue(ledger["clarifications"])
+        self.assertTrue((self.workspace / "assessment.json").is_file())
+        self.assertTrue((self.workspace / "assessment.md").is_file())
+
+    def test_assess_interactively_resolves_clarifications_when_answers_are_provided(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        responses = iter(["/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
+            output = self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        self.assertTrue(all(item["status"] == "resolved" for item in ledger["clarifications"]))
+        self.assertIn("Resolved 4 clarification(s) during assessment.", output)
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(assessment["recommendation"], "Proceed to Implementation")
+
+    def test_assess_skipped_interactive_clarifications_remain_open(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        responses = iter(["", "", "", ""])
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
+            output = self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        self.assertTrue(all(item["status"] == "open" for item in ledger["clarifications"]))
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(assessment["readiness"], "NOT_READY")
+        self.assertEqual(assessment["recommendation"], "Resolve Clarifications")
+        self.assertIn("No clarification answers provided", output)
+
+    def test_plan_requires_assessment(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        with self.assertRaises(SystemExit) as raised:
+            main(["plan"], self.cwd)
+        self.assertEqual(str(raised.exception), "No mission assessment exists. Run battalion assess first.")
+
+    def test_plan_consumes_assessment_output(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        output = self.run_cli("plan")
+        plan_path = self.workspace / "mission-plan.md"
+        self.assertTrue(plan_path.is_file())
+        plan = plan_path.read_text(encoding="utf-8")
+        self.assertIn("# Battalion Mission Plan", plan)
+        self.assertIn("## Assessment Gate", plan)
+        self.assertIn("R-001", plan)
+        self.assertIn("Generated execution-ready mission plan", output)
+
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         output = self.run_cli("assess")
         self.assertIn("Readiness: NOT_READY", output)
+        self.assertIn("Readiness Reasons:", output)
         self.assertIn("Recommendation: Resolve Clarifications", output)
+        self.assertIn("Recommendation Rationale:", output)
         assessment_json = self.workspace / "assessment.json"
         assessment_md = self.workspace / "assessment.md"
         self.assertTrue(assessment_json.is_file())
         self.assertTrue(assessment_md.is_file())
         assessment = json.loads(assessment_json.read_text(encoding="utf-8"))
-        self.assertEqual(assessment["schema_version"], "battalion.assessment.v1")
+        self.assertEqual(assessment["schema_version"], "battalion.assessment.v2")
         self.assertEqual(assessment["readiness"], "NOT_READY")
+        self.assertTrue(assessment["readiness_reason"])
         self.assertEqual(assessment["recommendation"], "Resolve Clarifications")
+        self.assertTrue(assessment["recommendation_reason"])
         self.assertIn("REST_API", assessment["mission_attributes"])
         self.assertIn("DOCKER", assessment["mission_attributes"])
+        self.assertIn("NODE", assessment["mission_attributes"])
+        self.assertIn("TYPESCRIPT", assessment["mission_attributes"])
+        self.assertIn("GET_ONLY", assessment["mission_attributes"])
+        self.assertIn("SECURE_ERROR_HANDLING", assessment["mission_attributes"])
+        self.assertIn("TESTING_REQUIRED", assessment["mission_attributes"])
+        self.assertIn("MALICIOUS_TESTING", assessment["mission_attributes"])
+        self.assertIn("attribute_sources", assessment)
+        self.assertIn("finding_categories", assessment)
         self.assertTrue(assessment["discipline_findings"])
         markdown = assessment_md.read_text(encoding="utf-8")
         for heading in (
             "## Mission", "## Assessment Summary", "## Readiness", "## Mission Attributes",
-            "## Outstanding Clarifications", "## Assumptions", "## Risks",
-            "## Engineering Obligation Summary", "## Discipline Findings",
+            "## Outstanding Clarifications", "## Assumptions", "## Risks", "## Resolved Risks",
+            "## Engineering Obligation Summary", "## Finding Categories", "## Discipline Findings",
             "## Recommendation", "## Next Engineering Activity", "## Timestamp", "## Schema Version",
         ):
             self.assertIn(heading, markdown)
 
     def test_assessment_is_deterministic_for_unchanged_mission(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("assess")
         first_json = (self.workspace / "assessment.json").read_text(encoding="utf-8")
         first_markdown = (self.workspace / "assessment.md").read_text(encoding="utf-8")
@@ -515,7 +580,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assessment_changes_when_mission_state_changes(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("assess")
         before = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
         self.run_cli(
@@ -531,13 +596,44 @@ class BattalionCliTests(unittest.TestCase):
         self.assertNotEqual(before["readiness"], after["readiness"])
         self.assertEqual(after["readiness"], "READY_WITH_RISK")
         self.assertEqual(after["recommendation"], "Proceed to Implementation")
+        self.assertTrue(after["readiness_reason"])
+        self.assertTrue(after["recommendation_reason"])
+
+    def test_assessment_resolved_clarifications_eliminate_contradictory_risks(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+            "--answer", "Q-004=OWASP API Security Top 10 2023",
+        )
+        self.run_cli("assess")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        open_risk_text = " ".join(item["statement"] for item in assessment["risks"])
+        resolved_risk_text = " ".join(item["statement"] for item in assessment["resolved_risks"])
+        self.assertNotIn("Framework selection remains unresolved", open_risk_text)
+        self.assertNotIn("OWASP standard or version requires clarification", open_risk_text)
+        self.assertIn("Framework selection remains unresolved", resolved_risk_text)
+        self.assertTrue(all(item["status"] == "RESOLVED" for item in assessment["resolved_risks"]))
+
+    def test_assessment_mission_summary_is_engineering_summary_not_prompt_repeat(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        self.run_cli("assess")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(assessment["mission_summary"], self.CONSTRAINT_PROMPT)
+        self.assertIn("TypeScript", assessment["mission_summary"])
+        self.assertIn("Docker", assessment["mission_summary"])
+        self.assertLessEqual(len(assessment["mission_summary"].split("\n\n")), 4)
 
     def test_assessment_readiness_rules_for_missing_requirements_and_acceptance(self):
         self.initialize()
         self.run_cli("assess")
-        empty = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
-        self.assertEqual(empty["readiness"], "NOT_READY")
-        self.assertEqual(empty["recommendation"], "Refine Requirements")
+        generated = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(read_yaml(self.ledger_path)["requirements"], [])
+        self.assertIn(generated["readiness"], {"PARTIALLY_READY", "READY_WITH_RISK", "READY"})
         self.plan_contract(acceptance=False)
         self.run_cli("assess")
         missing_acceptance = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
@@ -546,7 +642,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assessment_evaluates_obligation_findings_and_recommendation(self):
         self.initialize_with_prompt("Build a public REST API endpoint.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/public", "--answer", "Q-002=Fastify")
         self.run_cli("assess")
         assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
@@ -554,10 +650,20 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue(secops_findings)
         self.assertEqual(assessment["readiness"], "PARTIALLY_READY")
         self.assertEqual(assessment["recommendation"], "Perform Security Review")
+        self.assertTrue(assessment["recommendation_reason"])
+
+    def test_assessment_only_applicable_obligations_appear(self):
+        self.initialize_with_prompt("Build a command-line utility.")
+        self.run_cli("assess")
+        self.run_cli("assess")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertFalse(any(item["status"] == "NOT_APPLICABLE" for item in assessment["discipline_findings"]))
+        self.assertFalse(any(item["obligation"] == "HTTP method enforcement identified" for item in assessment["discipline_findings"]))
+        self.assertFalse(any(item["obligation"] == "Malicious-request tests identified" for item in assessment["discipline_findings"]))
 
     def test_assessment_does_not_mutate_mission_contract_or_audit(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        self.run_cli("plan")
+        self.run_cli("assess")
         before_mission = (self.workspace / "mission.yaml").read_text(encoding="utf-8")
         before_ledger = (self.workspace / "ledger.yaml").read_text(encoding="utf-8")
         before_events = (self.workspace / "events.jsonl").read_text(encoding="utf-8")
@@ -590,7 +696,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_dispatcher_creates_architect_review_before_developer_assignment(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         output = self.run_cli("dispatch")
         assignment = load_assignments(self.workspace)["assignments"][0]
         self.assertIn("Created assignment ASG-001", output)
@@ -605,7 +711,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_developer_assignment_waits_for_architect_review_unless_explicitly_allowed(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch", "--allow-implementation-before-reviews")
         assignment = load_assignments(self.workspace)["assignments"][0]
         self.assertEqual(assignment["assigned_unit"], "developer")
@@ -614,7 +720,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_execute_complete_transitions_assignment_and_dispatches_next(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         evidence = self.cwd / "evidence" / "asg-001-review.txt"
         evidence.parent.mkdir()
@@ -635,7 +741,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_execute_complete_without_evidence_blocks_instead_of_completing(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         output = self.run_cli("execute", "--outcome", "COMPLETE")
         assignment = load_assignments(self.workspace)["assignments"][0]
@@ -649,7 +755,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_blocked_assignment_remains_active_for_evidence_retry(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli("execute", "--outcome", "COMPLETE")
         blocked = load_assignments(self.workspace)["assignments"][0]
@@ -679,7 +785,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_waiting_assignment_remains_active_for_reexecution(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli("execute", "--outcome", "NEEDS_CLARIFICATION")
         waiting = load_assignments(self.workspace)["assignments"][0]
@@ -695,7 +801,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_aborted_assignment_releases_ownership(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli("execute", "--outcome", "ABORTED", "--reason", "Human stopped work")
         assignment = load_assignments(self.workspace)["assignments"][0]
@@ -706,7 +812,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_tester_review_waits_for_implementation_evidence(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/r1-architect.txt")
         self.run_cli("execute", "--outcome", "COMPLETE", "--evidence", "evidence/r1-implementation.txt")
@@ -725,7 +831,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_execute_failed_persists_abort_packet_and_halts_dispatch(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli(
             "execute",
@@ -755,7 +861,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_status_displays_runtime_dashboard(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         output = self.run_cli("status")
         self.assertIn("Mission: Constraint Mission", output)
@@ -768,7 +874,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_mission_cannot_advance_without_dispatcher_assignment(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         with self.assertRaises(SystemExit) as raised:
             main(["execute", "--outcome", "COMPLETE"], self.cwd)
         self.assertIn("No active assignment exists. Run 'battalion dispatch' first.", str(raised.exception))
@@ -776,7 +882,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assignment_history_remains_auditable(self):
         self.initialize_with_prompt("Create a simple REST API.")
-        self.run_cli("plan")
+        self.run_cli("assess")
         self.run_cli("dispatch")
         self.run_cli("execute", "--outcome", "BLOCKED", "--summary", "Need dependency")
         assignment = load_assignments(self.workspace)["assignments"][0]
