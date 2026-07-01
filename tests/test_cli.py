@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from battalion.assurance import assure
+from battalion.classification import MissionClassifier, default_attribute_catalog
 from battalion.cli import main
 from battalion.dispatcher import load_assignments
 from battalion.mission_analyst import generate_mission_contract
@@ -79,10 +80,14 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_init_creates_workspace_and_original_prompt(self):
         self.initialize()
-        for name in ("mission.yaml", "agents.yaml", "ledger.yaml", "events.jsonl", "reports"):
+        for name in ("mission.yaml", "agents.yaml", "attributes.yaml", "ledger.yaml", "events.jsonl", "reports"):
             self.assertTrue((self.workspace / name).exists())
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["original_prompt"], "Build JWT authentication.")
         self.assertEqual(len(read_yaml(self.workspace / "agents.yaml")["agents"]), 9)
+        catalog = read_yaml(self.workspace / "attributes.yaml")
+        identifiers = [item["identifier"] for item in catalog["attributes"]]
+        for identifier in ("REST_API", "HTTP_ENDPOINT", "USER_INTERFACE", "DATABASE", "SECURITY", "TESTING_REQUIRED", "NODE", "TYPESCRIPT", "DOTNET", "DOCKER"):
+            self.assertIn(identifier, identifiers)
 
     def test_console_entry_point_is_registered(self):
         repository = Path(__file__).resolve().parents[1]
@@ -96,7 +101,128 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.3.2", output.getvalue())
+        self.assertIn("Battalion v0.3.5", output.getvalue())
+
+    def classification_for_prompt(self, prompt):
+        self.initialize_with_prompt(prompt)
+        self.run_cli("assess")
+        return json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))["mission_classification"]
+
+    def detected_attributes_for_prompt(self, prompt):
+        return set(self.classification_for_prompt(prompt)["detected_attributes"])
+
+    def test_classifier_detects_rest_api_missions(self):
+        attributes = self.detected_attributes_for_prompt("Build a REST API endpoint that returns JSON over HTTP.")
+        self.assertIn("REST_API", attributes)
+
+    def test_classifier_detects_react_user_interface_missions(self):
+        attributes = self.detected_attributes_for_prompt("Build a React page with a form and submit button.")
+        self.assertIn("USER_INTERFACE", attributes)
+
+    def test_classifier_detects_sql_database_missions(self):
+        attributes = self.detected_attributes_for_prompt("Create a SQL database migration that adds a schema table and index.")
+        self.assertIn("DATABASE", attributes)
+
+    def test_classifier_detects_docker_missions(self):
+        attributes = self.detected_attributes_for_prompt("Package the service with Docker and a Dockerfile.")
+        self.assertIn("DOCKER", attributes)
+
+    def test_classifier_detects_security_missions(self):
+        attributes = self.detected_attributes_for_prompt("Add JWT authentication and authorization following OWASP guidance.")
+        self.assertIn("SECURITY", attributes)
+
+    def test_classifier_detects_node_missions(self):
+        attributes = self.detected_attributes_for_prompt("Build a Node Fastify API using npm scripts.")
+        self.assertIn("NODE", attributes)
+
+    def test_classifier_detects_dotnet_missions(self):
+        attributes = self.detected_attributes_for_prompt("Build an ASP.NET minimal API in C# using Entity Framework.")
+        self.assertIn("DOTNET", attributes)
+
+    def test_classifier_records_classification_evidence_hit_counts_and_decisions(self):
+        result = MissionClassifier(default_attribute_catalog()).classify(
+            {"mission_prompt": "Build a REST API with OpenAPI over HTTP."},
+            {"requirements": [], "clarifications": []},
+        )
+        rest = next(item for item in result["attributes"] if item["attribute"] == "REST_API")
+        self.assertTrue(rest["classified"])
+        self.assertEqual(rest["decision"], "classified")
+        evidence = rest["classification_evidence"]
+        indicators = {item["indicator"] for item in evidence}
+        sources = {item["source"] for item in evidence}
+        self.assertIn("rest", indicators)
+        self.assertIn("http", indicators)
+        self.assertIn("openapi", indicators)
+        self.assertIn("mission_prompt", sources)
+        self.assertEqual(rest["hit_count"], len(indicators))
+        self.assertEqual(rest["threshold"], 2)
+        database = next(item for item in result["attributes"] if item["attribute"] == "DATABASE")
+        self.assertFalse(database["classified"])
+        self.assertEqual(database["classification_evidence"], [])
+        self.assertEqual(database["decision"], "not_classified")
+
+    def test_classifier_tracks_evidence_sources(self):
+        result = MissionClassifier(default_attribute_catalog()).classify(
+            {"mission_prompt": "Build an API.", "objective": "Expose HTTP service."},
+            {
+                "requirements": [{"statement": "Document routes", "acceptance": ["OpenAPI document exists"]}],
+                "clarifications": [{"status": "resolved", "answer": "Use REST conventions."}],
+            },
+        )
+        rest = next(item for item in result["attributes"] if item["attribute"] == "REST_API")
+        evidence = {(item["indicator"], item["source"]) for item in rest["classification_evidence"]}
+        self.assertIn(("api", "mission_prompt"), evidence)
+        self.assertIn(("http", "mission_objective"), evidence)
+        self.assertIn(("openapi", "acceptance_criteria"), evidence)
+        self.assertIn(("rest", "clarification_answer"), evidence)
+
+    def test_rest_api_requires_threshold_hit_count(self):
+        result = MissionClassifier(default_attribute_catalog()).classify(
+            {"mission_prompt": "Return JSON from the worker."},
+            {"requirements": [], "clarifications": []},
+        )
+        rest = next(item for item in result["attributes"] if item["attribute"] == "REST_API")
+        self.assertFalse(rest["classified"])
+        self.assertEqual(rest["hit_count"], 1)
+        self.assertEqual(rest["threshold"], 2)
+
+    def test_database_requires_threshold_hit_count(self):
+        result = MissionClassifier(default_attribute_catalog()).classify(
+            {"mission_prompt": "Create a SQL script."},
+            {"requirements": [], "clarifications": []},
+        )
+        database = next(item for item in result["attributes"] if item["attribute"] == "DATABASE")
+        self.assertFalse(database["classified"])
+        self.assertEqual(database["hit_count"], 1)
+        self.assertEqual(database["threshold"], 2)
+
+    def test_classifier_uses_configurable_catalog_thresholds(self):
+        result = MissionClassifier({
+            "attributes": [{
+                "identifier": "CUSTOM_RUNTIME",
+                "description": "Custom runtime marker",
+                "indicators": ["alpha", "beta"],
+                "minimum_threshold": 2,
+            }]
+        }).classify({"mission_prompt": "Use alpha only."}, {"requirements": [], "clarifications": []})
+        custom = result["attributes"][0]
+        self.assertFalse(custom["classified"])
+        self.assertEqual(custom["hit_count"], 1)
+        result = MissionClassifier({
+            "attributes": [{
+                "identifier": "CUSTOM_RUNTIME",
+                "description": "Custom runtime marker",
+                "indicators": ["alpha", "beta"],
+                "minimum_threshold": 2,
+            }]
+        }).classify({"mission_prompt": "Use alpha and beta."}, {"requirements": [], "clarifications": []})
+        self.assertTrue(result["attributes"][0]["classified"])
+
+    def test_classifier_is_deterministic(self):
+        mission = {"mission_prompt": "Build a REST API over HTTP with OpenAPI docs."}
+        ledger = {"requirements": [{"statement": "Serve API route", "acceptance": ["OpenAPI document exists"]}], "clarifications": []}
+        classifier = MissionClassifier(default_attribute_catalog())
+        self.assertEqual(classifier.classify(mission, ledger), classifier.classify(mission, ledger))
 
     def test_interactive_init_captures_and_stores_mission_prompt(self):
         mission_prompt = "Build a hello world REST API."
@@ -332,7 +458,7 @@ class BattalionCliTests(unittest.TestCase):
     def test_interactive_clarify_collects_human_answers(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        responses = iter(["/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
+        responses = iter(["a", "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
@@ -347,7 +473,7 @@ class BattalionCliTests(unittest.TestCase):
     def test_interactive_clarify_blank_answer_leaves_clarification_open(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        responses = iter(["/health", "", "", "", "Jesse Williams"])
+        responses = iter(["a", "/health", "", "", "", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
@@ -364,7 +490,7 @@ class BattalionCliTests(unittest.TestCase):
     def test_interactive_clarify_all_blank_answers_do_not_require_resolver(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        responses = iter(["", "", "", ""])
+        responses = iter(["a", "", "", "", ""])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
@@ -372,6 +498,28 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Summary: 0 resolved, 4 still open.", output)
         event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         self.assertNotIn("clarification_resolved", event_types)
+
+    def test_clarify_only_presents_unresolved_clarifications(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
+        output = self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-002=Fastify")
+        self.assertNotIn("\nQ-001\n", output)
+        self.assertIn("\nQ-002\n", output)
+        self.assertIn("\nQ-003\n", output)
+        self.assertIn("\nQ-004\n", output)
+        clarifications = read_yaml(self.ledger_path)["clarifications"]
+        self.assertEqual(clarifications[0]["status"], "resolved")
+        self.assertEqual(clarifications[1]["status"], "resolved")
+
+    def test_clarify_does_not_generate_assessment_artifacts(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        (self.workspace / "assessment.json").unlink()
+        (self.workspace / "assessment.md").unlink()
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/health")
+        self.assertFalse((self.workspace / "assessment.json").exists())
+        self.assertFalse((self.workspace / "assessment.md").exists())
 
     def test_rejected_and_superseded_clarification_states_are_audited(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
@@ -491,9 +639,9 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assess_interactively_resolves_clarifications_when_answers_are_provided(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        responses = iter(["/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
+        responses = iter(["a", "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
-            output = self.run_cli("assess")
+            output = self.run_cli("assess", "--interactive")
         ledger = read_yaml(self.ledger_path)
         self.assertTrue(all(item["status"] == "resolved" for item in ledger["clarifications"]))
         self.assertIn("Resolved 4 clarification(s) during assessment.", output)
@@ -502,15 +650,38 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assess_skipped_interactive_clarifications_remain_open(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        responses = iter(["", "", "", ""])
+        responses = iter(["s"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
-            output = self.run_cli("assess")
+            output = self.run_cli("assess", "--interactive")
         ledger = read_yaml(self.ledger_path)
         self.assertTrue(all(item["status"] == "open" for item in ledger["clarifications"]))
         assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
         self.assertEqual(assessment["readiness"], "NOT_READY")
         self.assertEqual(assessment["recommendation"], "Resolve Clarifications")
         self.assertIn("No clarification answers provided", output)
+
+    def test_assess_never_prompts_by_default(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError("assess prompted unexpectedly")):
+            output = self.run_cli("assess")
+        self.assertIn("Outstanding Clarifications", output)
+        self.assertIn("Run:\n  battalion clarify", output)
+        ledger = read_yaml(self.ledger_path)
+        self.assertTrue(all(item["status"] == "open" for item in ledger["clarifications"]))
+
+    def test_assess_interactive_prompts_only_when_clarifications_exist(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+            "--answer", "Q-004=OWASP API Security Top 10 2023",
+        )
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError("interactive assess prompted without open clarifications")):
+            output = self.run_cli("assess", "--interactive")
+        self.assertIn("Outstanding Clarifications\n- None", output)
 
     def test_plan_requires_assessment(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
@@ -535,9 +706,13 @@ class BattalionCliTests(unittest.TestCase):
         self.run_cli("assess")
         output = self.run_cli("assess")
         self.assertIn("Readiness: NOT_READY", output)
-        self.assertIn("Readiness Reasons:", output)
+        self.assertIn("Mission Classification", output)
+        self.assertIn("REST_API: classified", output)
+        self.assertIn("hit count", output)
+        self.assertIn("Primary Findings", output)
+        self.assertIn("Outstanding Clarifications", output)
         self.assertIn("Recommendation: Resolve Clarifications", output)
-        self.assertIn("Recommendation Rationale:", output)
+        self.assertIn("Run:\n  battalion clarify", output)
         assessment_json = self.workspace / "assessment.json"
         assessment_md = self.workspace / "assessment.md"
         self.assertTrue(assessment_json.is_file())
@@ -557,16 +732,28 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("TESTING_REQUIRED", assessment["mission_attributes"])
         self.assertIn("MALICIOUS_TESTING", assessment["mission_attributes"])
         self.assertIn("attribute_sources", assessment)
+        self.assertIn("mission_classification", assessment)
+        rest = next(item for item in assessment["mission_classification"]["attributes"] if item["attribute"] == "REST_API")
+        self.assertTrue(rest["classified"])
+        self.assertTrue(rest["classification_evidence"])
+        self.assertIn("indicator", rest["classification_evidence"][0])
+        self.assertIn("source", rest["classification_evidence"][0])
+        self.assertGreaterEqual(rest["hit_count"], 1)
+        self.assertEqual(rest["threshold"], 2)
         self.assertIn("finding_categories", assessment)
         self.assertTrue(assessment["discipline_findings"])
         markdown = assessment_md.read_text(encoding="utf-8")
         for heading in (
             "## Mission", "## Assessment Summary", "## Readiness", "## Mission Attributes",
-            "## Outstanding Clarifications", "## Assumptions", "## Risks", "## Resolved Risks",
+            "## Mission Classification", "## Outstanding Clarifications", "## Assumptions", "## Risks", "## Resolved Risks",
             "## Engineering Obligation Summary", "## Finding Categories", "## Discipline Findings",
             "## Recommendation", "## Next Engineering Activity", "## Timestamp", "## Schema Version",
         ):
             self.assertIn(heading, markdown)
+        self.assertIn("REST_API", markdown)
+        self.assertIn("hit count:", markdown)
+        self.assertIn("evidence:", markdown)
+        self.assertIn("from mission_prompt", markdown)
 
     def test_assessment_is_deterministic_for_unchanged_mission(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

@@ -1,4 +1,4 @@
-# Battalion v0.3.2 — Correct Init → Assess → Plan Workflow
+# Battalion v0.3.5 — Classification Evidence Refinement
 
 Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
@@ -52,7 +52,7 @@ battalion report
 
 Every command locates `.battalion` relative to the current working directory. The repository root, manual imports, custom aliases, and `PYTHONPATH` are not required.
 
-`init` captures the mission title, objective, and prompt, then creates `.battalion/mission.yaml`, `agents.yaml`, `ledger.yaml`, `events.jsonl`, and `reports/`. It does not require requirements yet. The prompt is stored as `mission_prompt` in both the mission record and initial ledger and is the authoritative source of mission intent. For non-interactive use:
+`init` captures the mission title, objective, and prompt, then creates `.battalion/mission.yaml`, `agents.yaml`, `attributes.yaml`, `ledger.yaml`, `events.jsonl`, and `reports/`. It does not require requirements yet. The prompt is stored as `mission_prompt` in both the mission record and initial ledger and is the authoritative source of mission intent. For non-interactive use:
 
 ```bash
 battalion init \
@@ -119,13 +119,13 @@ Open clarifications keep Mission Assurance at AMBER / NO-GO; terminal clarificat
 
 ## Clarification resolution
 
-Open clarifications are part of assessment readiness. You can resolve them directly during `battalion assess` in an interactive terminal, or use the standalone clarification workflow:
+Open clarifications are part of assessment readiness. Resolve them with the dedicated clarification workflow:
 
 ```bash
 battalion clarify
 ```
 
-Battalion displays each open question, asks who is resolving it, collects answers, persists the decisions, appends audit events, and runs deterministic Mission Analyst reconciliation.
+Battalion displays only unresolved questions and lets you answer all, answer one, skip, or exit. It asks who is resolving answered clarifications, persists the decisions, appends audit events, and runs deterministic Mission Analyst reconciliation. Previously answered clarifications remain resolved and are not shown again.
 
 For non-interactive use, repeat `--answer`:
 
@@ -148,13 +148,30 @@ Resolution refines requirements in place. For the example above, the contract se
 
 Every lifecycle transition appends both contract history and an audit event: `clarification_created`, `clarification_resolved`, `clarification_superseded`, or `clarification_rejected`. Reconciliation emits `mission_contract_reconciled`. This keeps human decisions reconstructable while preserving a schema future agent implementations can consume.
 
-If `assess` runs non-interactively and open clarifications exist, Battalion does not pretend readiness is final. It prints:
+Default `battalion assess` never prompts for clarification answers. If open clarifications exist, Battalion does not pretend readiness is final. It prints primary findings, outstanding clarification IDs and questions, and the command to run next:
 
 ```text
-Clarifications are required before readiness can be finalized. Run battalion clarify.
+Primary Findings
+- Open clarifications must be resolved before planning.
+
+Outstanding Clarifications
+- Q-001: What endpoint path should be used?
+
+Recommendation: Resolve Clarifications
+
+Run:
+  battalion clarify
 ```
 
 Skipped clarification answers remain `open`; readiness remains `NOT_READY` and the recommendation remains `Resolve Clarifications`.
+
+If you want the convenience workflow, opt in explicitly:
+
+```bash
+battalion assess --interactive
+```
+
+Interactive assessment runs the normal assessment first. If unresolved clarifications exist, it prompts for answers, persists them, reconciles the mission contract, re-runs assessment automatically, and displays updated readiness. This is a convenience path; `battalion clarify` remains the dedicated clarification workflow.
 
 Manual requirement entry remains available when needed:
 
@@ -166,7 +183,7 @@ battalion plan --requirement "Validate JWT issuer" \
   --review tester
 ```
 
-Each generated review begins in `pending`. Run `battalion assess` after `init` to evaluate whether enough engineering information exists to responsibly begin implementation. Mission Assessment may generate or reconcile the mission contract and clarification decisions, but it does not generate code, create runtime assignments, dispatch work, or approve completed work.
+Each generated review begins in `pending`. Run `battalion assess` after `init` to evaluate whether enough engineering information exists to responsibly begin implementation. Mission Assessment may generate the mission contract and write assessment artifacts, but default assessment does not collect clarification answers, generate code, create runtime assignments, dispatch work, or approve completed work.
 
 Run `battalion plan` after assessment to produce the execution-ready mission plan. Run `battalion assure` only when you need the independent evidence/audit gate. At planning time Assurance may still return AMBER / NO-GO because work, evidence, or reviews remain incomplete; that is expected. RED / NO-GO means the contract or audit trail is malformed and should be fixed before dispatch.
 
@@ -184,7 +201,7 @@ Mission Assessment answers:
 
 It is distinct from Mission Assurance, which answers whether completed engineering work has enough evidence to be accepted.
 
-Assessment evaluates mission understanding, outstanding clarifications, assumptions, risks, engineering obligations, discipline findings, readiness, and the recommended next action. If requirements are missing, it generates the mission contract from the prompt first. It never generates code, creates runtime assignments, dispatches work, or approves completed work.
+Assessment evaluates mission understanding, mission classification, outstanding clarifications, assumptions, risks, engineering obligations, discipline findings, readiness, and the recommended next action. If requirements are missing, it generates the mission contract from the prompt first. It never generates code, creates runtime assignments, dispatches work, or approves completed work.
 
 `battalion assess` writes two deterministic artifacts:
 
@@ -209,11 +226,54 @@ Recommendations are selected deterministically from:
 - `Complete Mission Planning`
 - `Proceed to Implementation`
 
-Every readiness result includes `readiness_reason`, and every recommendation includes `recommendation_reason`. The CLI prints both, the Markdown report expands both, and `assessment.json` stores both for future Mission Planning and Dispatcher slices.
+Every readiness result includes `readiness_reason`, and every recommendation includes `recommendation_reason`. The CLI prioritizes primary findings, outstanding clarifications, and the next recommended command. The Markdown report expands obligation details, readiness reasons, and recommendation rationale, and `assessment.json` stores the canonical data for Mission Planning and Dispatcher slices.
+
+## Mission Classification
+
+Mission Classification is a standalone deterministic step consumed by Mission Assessment:
+
+```text
+Mission Contract
+↓
+Mission Classifier
+↓
+Detected Attributes
+↓
+Assessment Engine
+```
+
+The classifier determines engineering attributes only. It does not contain readiness rules, recommendation logic, engineering obligations, or assurance logic.
+
+The attribute catalog lives at `.battalion/attributes.yaml`. The file is JSON-formatted YAML and can be extended by a project or enterprise without changing Battalion code. Each attribute contains:
+
+- `identifier`
+- `description`
+- `indicators`
+- `minimum_threshold`
+
+Seeded attributes include `REST_API`, `HTTP_ENDPOINT`, `USER_INTERFACE`, `DATABASE`, `SECURITY`, `TESTING_REQUIRED`, `NODE`, `TYPESCRIPT`, `DOTNET`, and `DOCKER`, plus compatibility attributes used by existing obligation applicability such as `GET_ONLY`, `SECURE_ERROR_HANDLING`, `MALICIOUS_TESTING`, and `AUTHENTICATION`.
+
+For each catalog attribute, Mission Classification records:
+
+- detected attribute identifier;
+- classification evidence with indicator and source;
+- hit count;
+- threshold;
+- classification decision.
+
+Example assessment output:
+
+```text
+Mission Classification
+- REST_API: classified; evidence [api from mission_prompt, rest from mission_prompt, endpoint from requirement]; hit count 3; threshold 2
+- DOCKER: classified; evidence [docker from mission_prompt]; hit count 1; threshold 1
+```
+
+`assessment.json` includes the canonical `mission_classification` object, and `assessment.md` includes a Mission Classification section. Assessment consumes the resulting `mission_attributes` list when applying Battalion-owned obligation packs.
 
 Mission Assessment uses built-in Engineering Obligation Packs for Mission Analyst, Architect, Developer, Tester, SecOps, DevOps, SRE, and UX. Each obligation defines when it applies, required disposition, description, severity, category, and finding message. Only applicable obligations appear in the assessment. The implementation keeps obligation data separate from CLI handling so future organization-specific packs can be introduced without turning `battalion assess` into hardcoded prompt logic.
 
-Assessment infers mission attributes from the mission contract, constraints, requirements, and resolved clarifications. Attributes include `REST_API`, `HTTP_ENDPOINT`, `PUBLIC_ENDPOINT`, `PUBLIC_API`, `GET_ONLY`, `NODE`, `TYPESCRIPT`, `DOCKER`, `SECURE_ERROR_HANDLING`, `TESTING_REQUIRED`, `MALICIOUS_TESTING`, `AUTHENTICATION`, `DATABASE`, `USER_INTERFACE`, `CLI`, and `BACKGROUND_PROCESS`. `assessment.json` also records `attribute_sources`.
+Assessment receives mission attributes from Mission Classification. `assessment.json` also records `attribute_sources` as a compact compatibility map for the detected attributes.
 
 Risks are categorized deterministically as Security, Architecture, Operational, Implementation, or Documentation. If a clarification resolves a previously unknown item, the assessment marks the corresponding risk as resolved in `resolved_risks` instead of continuing to present it as an open contradiction. The canonical JSON also includes `resolved_assumptions` and `finding_categories`.
 
@@ -321,7 +381,7 @@ battalion status
 
 `status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
 
-For v0.3.2, clarification decisions can be recorded during interactive `battalion assess` or through `battalion clarify`. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
+For v0.3.5, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
 
 ```bash
 battalion assess
@@ -390,7 +450,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.3.2. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.3.5. Battalion does not execute the reviewers.
 
 ## Audit validation
 

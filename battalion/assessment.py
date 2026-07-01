@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .classification import MissionClassifier, default_attribute_catalog
 from .storage import read_yaml
 
 
@@ -253,42 +254,41 @@ def _constraints(ledger: Dict[str, Any], category: str = "") -> List[Dict[str, A
     return [entry for entries in values.values() if isinstance(entries, list) for entry in entries if isinstance(entry, dict)]
 
 
+def classify_mission(mission: Dict[str, Any], ledger: Dict[str, Any], catalog: Dict[str, Any] = None) -> Dict[str, Any]:
+    return MissionClassifier(catalog or default_attribute_catalog()).classify(mission, ledger)
+
+
 def infer_attribute_sources(mission: Dict[str, Any], ledger: Dict[str, Any]) -> Dict[str, List[str]]:
-    prompt = _text(mission.get("mission_prompt") or mission.get("original_prompt") or ledger.get("mission_prompt"))
-    requirement_text = _text(ledger.get("requirements", []))
-    constraint_text = _text(ledger.get("constraints", {}))
-    clarification_text = _text([
-        item for item in ledger.get("clarifications", [])
-        if isinstance(item, dict) and item.get("status") in {"resolved", "superseded"}
-    ])
-    combined = " ".join([prompt, requirement_text, constraint_text, clarification_text])
-    checks = {
-        "REST_API": (r"\brest\b|\bapi\b", "mission contract references REST/API behavior"),
-        "HTTP_ENDPOINT": (r"\bendpoint\b|\bhttp\b|/[a-z0-9_/{}/.-]+", "mission contract references HTTP endpoint behavior"),
-        "PUBLIC_ENDPOINT": (r"\bpublic endpoint\b|\bpublic api\b", "mission contract references public endpoint/API exposure"),
-        "PUBLIC_API": (r"\bpublic api\b", "mission contract references public API exposure"),
-        "GET_ONLY": (r"\bget[- ]only\b|\bonly\s+(?:allow\s+)?get\b|GET requests are allowed|POST requests are rejected|Only GET", "mission contract identifies GET-only behavior"),
-        "NODE": (r"\bnode(?:\.js|js)?\b", "mission contract identifies Node.js"),
-        "TYPESCRIPT": (r"\btypescript\b", "mission contract identifies TypeScript"),
-        "DOCKER": (r"\bdocker\b|\bcontainer", "mission contract identifies Docker/containerization"),
-        "SECURE_ERROR_HANDLING": (r"\bowasp\b|secure error|malformed|stack traces|information disclosure|do not expose", "mission contract identifies secure error handling"),
-        "TESTING_REQUIRED": (r"\btest(?:s|ing)?\b|automated tests|test suite", "mission contract identifies testing obligations"),
-        "MALICIOUS_TESTING": (r"malicious[- ]request|malicious request", "mission contract identifies malicious-request testing"),
-        "AUTHENTICATION": (r"\bauth(?:entication|orization)?\b|\bjwt\b|\blogin\b|\btoken\b|\bidentity\b", "mission contract references authentication or identity"),
-        "DATABASE": (r"\bdatabase\b|\bpostgres\b|\bmysql\b|\bsqlite\b|\bredis\b", "mission contract references data storage"),
-        "USER_INTERFACE": (r"\bui\b|\buser interface\b|\bfrontend\b|\bweb app\b|\bscreen\b", "mission contract references user interface behavior"),
-        "CLI": (r"\bcli\b|\bcommand[- ]line\b", "mission contract references command-line interaction"),
-        "BACKGROUND_PROCESS": (r"\bworker\b|\bbackground\b|\bdaemon\b|\bqueue\b", "mission contract references background processing"),
-    }
-    sources = {}
-    for attribute, (pattern, reason) in checks.items():
-        if _contains(combined, pattern):
-            sources[attribute] = [reason]
-    return {key: sources[key] for key in sorted(sources)}
+    classification = classify_mission(mission, ledger)
+    return _attribute_sources_from_classification(classification)
 
 
 def infer_attributes(mission: Dict[str, Any], ledger: Dict[str, Any]) -> List[str]:
-    return sorted(infer_attribute_sources(mission, ledger))
+    return sorted(classify_mission(mission, ledger)["detected_attributes"])
+
+
+def _attribute_sources_from_classification(classification: Dict[str, Any]) -> Dict[str, List[str]]:
+    sources = {}
+    for item in classification.get("attributes", []):
+        if not item.get("classified"):
+            continue
+        matched = [entry.get("indicator", "") for entry in item.get("classification_evidence", [])]
+        sources[item["attribute"]] = [
+            "Matched indicator(s): " + ", ".join(matched) if matched else "Matched configured threshold."
+        ]
+    return {key: sources[key] for key in sorted(sources)}
+
+
+def _attribute_catalog(workspace: Path) -> Dict[str, Any]:
+    path = workspace / "attributes.yaml"
+    if not path.is_file():
+        return default_attribute_catalog()
+    catalog = read_yaml(path)
+    if not isinstance(catalog, dict):
+        raise ValueError("attribute catalog must be an object")
+    if not isinstance(catalog.get("attributes"), list):
+        raise ValueError("attribute catalog must contain an attributes list")
+    return catalog
 
 
 def _open_clarifications(ledger: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -599,8 +599,9 @@ def _mission_summary(mission: Dict[str, Any], ledger: Dict[str, Any], attributes
 def assess(workspace: Path) -> Dict[str, Any]:
     mission = read_yaml(workspace / "mission.yaml")
     ledger = read_yaml(workspace / "ledger.yaml")
-    attribute_sources = infer_attribute_sources(mission, ledger)
-    attributes = sorted(attribute_sources)
+    classification = classify_mission(mission, ledger, _attribute_catalog(workspace))
+    attribute_sources = _attribute_sources_from_classification(classification)
+    attributes = sorted(classification["detected_attributes"])
     findings = evaluate_obligations(mission, ledger, attributes)
     categorized_risks = _categorized_risks(ledger)
     readiness = _readiness(ledger, findings, categorized_risks["open"])
@@ -631,6 +632,7 @@ def assess(workspace: Path) -> Dict[str, Any]:
         "next_engineering_activity": recommendation,
         "mission_attributes": attributes,
         "attribute_sources": attribute_sources,
+        "mission_classification": classification,
         "outstanding_clarifications": [
             {"id": item.get("id"), "question": item.get("question"), "status": item.get("status")}
             for item in open_clarifications
@@ -682,6 +684,15 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
         )
         for item in assessment.get("discipline_findings", [])
     ]
+    classification = [
+        (
+            f"{item.get('attribute', '—')} — {item.get('decision', '—')} — "
+            f"classified: {'yes' if item.get('classified') else 'no'} — "
+            f"hit count: {item.get('hit_count', 0)} — threshold: {item.get('threshold', 1)} — "
+            f"evidence: {_classification_evidence_text(item)}"
+        )
+        for item in assessment.get("mission_classification", {}).get("attributes", [])
+    ]
     summary = assessment.get("engineering_obligation_summary", {})
     mission = assessment.get("mission", {})
     return f"""# Battalion Mission Assessment
@@ -709,6 +720,10 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
 ## Mission Attributes
 
 {bullet(assessment.get('mission_attributes', []))}
+
+## Mission Classification
+
+{bullet(classification)}
 
 ### Attribute Sources
 
@@ -771,3 +786,13 @@ def write_assessment(workspace: Path) -> Dict[str, Any]:
     (workspace / "assessment.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (workspace / "assessment.md").write_text(render_assessment_markdown(result), encoding="utf-8")
     return result
+
+
+def _classification_evidence_text(item: Dict[str, Any]) -> str:
+    evidence = item.get("classification_evidence", [])
+    if not evidence:
+        return "None"
+    return ", ".join(
+        f"{entry.get('indicator', '—')} from {entry.get('source', '—')}"
+        for entry in evidence
+    )
