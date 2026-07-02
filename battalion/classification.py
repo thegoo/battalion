@@ -1,6 +1,5 @@
 """Deterministic mission classification from external attribute catalogs."""
 
-import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List
@@ -19,9 +18,11 @@ class AttributeCatalogLoader:
     def load(self) -> Dict[str, Any]:
         try:
             catalog = parse_attribute_catalog(self.path.read_text(encoding="utf-8"))
+            return normalize_attribute_catalog(catalog)
         except OSError as exc:
             raise ValueError(f"cannot read {self.path.name}: {exc}") from exc
-        return normalize_attribute_catalog(catalog)
+        except ValueError as exc:
+            raise ValueError(f"attribute catalog must be valid YAML conforming to {ATTRIBUTE_SCHEMA_VERSION}: {exc}") from exc
 
 
 class MissionClassifier:
@@ -100,7 +101,7 @@ def parse_attribute_catalog(text: str) -> Dict[str, Any]:
     if not stripped:
         raise ValueError("attribute catalog is empty")
     if stripped.startswith("{"):
-        return json.loads(stripped)
+        raise ValueError("JSON/object-literal catalogs are not accepted")
     return _parse_simple_yaml_catalog(stripped.splitlines())
 
 

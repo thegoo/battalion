@@ -223,23 +223,35 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_attribute_catalog_loader_rejects_invalid_schema_version(self):
         self.initialize_with_prompt("Build a REST API.")
-        write_yaml(self.workspace / "attributes.yml", {"schema_version": "wrong", "attributes": {}})
+        (self.workspace / "attributes.yml").write_text("schema_version: wrong\nattributes: {}\n", encoding="utf-8")
         with self.assertRaises(SystemExit) as raised:
             main(["assess"], self.cwd)
+        self.assertIn("attribute catalog must be valid YAML conforming to battalion.attributes.v1", str(raised.exception))
         self.assertIn("unsupported attribute catalog schema_version", str(raised.exception))
+
+    def test_attribute_catalog_loader_rejects_json_catalogs(self):
+        self.initialize_with_prompt("Build a REST API.")
+        (self.workspace / "attributes.yml").write_text('{"schema_version":"battalion.attributes.v1","attributes":{}}\n', encoding="utf-8")
+        with self.assertRaises(SystemExit) as raised:
+            main(["assess"], self.cwd)
+        self.assertIn("attribute catalog must be valid YAML conforming to battalion.attributes.v1", str(raised.exception))
+        self.assertIn("JSON/object-literal catalogs are not accepted", str(raised.exception))
 
     def test_mission_classifier_loads_attributes_from_yaml(self):
         self.initialize_with_prompt("Use acme runtime.")
-        write_yaml(self.workspace / "attributes.yml", {
-            "schema_version": ATTRIBUTE_SCHEMA_VERSION,
-            "attributes": {
-                "ACME_RUNTIME": {
-                    "description": "Custom ACME runtime.",
-                    "threshold": 1,
-                    "indicators": ["acme"],
-                }
-            },
-        })
+        (self.workspace / "attributes.yml").write_text(
+            "\n".join([
+                f"schema_version: {ATTRIBUTE_SCHEMA_VERSION}",
+                "attributes:",
+                "  ACME_RUNTIME:",
+                "    description: Custom ACME runtime.",
+                "    threshold: 1",
+                "    indicators:",
+                "      - acme",
+                "",
+            ]),
+            encoding="utf-8",
+        )
         catalog = AttributeCatalogLoader(self.workspace / "attributes.yml").load()
         result = MissionClassifier(catalog).classify(
             {"mission_prompt": "Use acme runtime."},
