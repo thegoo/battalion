@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -110,7 +111,7 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "",
         "## Background",
         "",
-        _mission_background(assessment, ledger),
+        _mission_background(mission, ledger, constraints),
         "",
         "## Mission Objective",
         "",
@@ -118,7 +119,7 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "",
         "## Business Outcome",
         "",
-        "No explicit business outcome was identified during assessment.",
+        _business_outcome(mission, ledger, constraints),
         "",
         "## Readiness Summary",
         "",
@@ -137,7 +138,7 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "## Functional Requirements",
         "",
     ])
-    lines.extend(_requirement_lines(requirements, "functional"))
+    lines.extend(_requirement_lines(requirements, constraints))
     lines.extend([
         "",
         "## Non-Functional Requirements",
@@ -183,7 +184,7 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "## Implementation Guidance",
         "",
     ])
-    lines.extend(_implementation_guidance(requirements, constraints, architecture_references))
+    lines.extend(_implementation_guidance(mission, requirements, constraints, architecture_references))
     lines.extend([
         "",
         "## Suggested Work Breakdown",
@@ -223,17 +224,54 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "## Mission Success Criteria",
         "",
     ])
-    lines.extend(_success_criteria(requirements, constraints))
+    lines.extend(_success_criteria(mission, requirements, constraints))
     return "\n".join(lines) + "\n"
 
 
-def _mission_background(assessment, ledger):
-    summary = assessment.get("mission_summary")
-    if summary:
-        return summary
-    if ledger.get("mission_prompt"):
-        return "The assessed mission prompt defines the implementation scope. No additional background was identified during assessment."
+def _mission_text(mission, ledger):
+    return " ".join(str(value) for value in (
+        mission.get("mission_prompt"),
+        mission.get("original_prompt"),
+        mission.get("objective"),
+        ledger.get("mission_prompt"),
+    ) if value)
+
+
+def _has_text(text, pattern):
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
+def _mission_background(mission, ledger, constraints):
+    text = _mission_text(mission, ledger)
+    if constraints.get("functional") and _has_text(text, r"health"):
+        return (
+            "The mission exists to provide a lightweight health endpoint that gives operators a dependable way to verify service availability. "
+            "The engineering problem is to expose that operational signal while preserving the security and validation expectations captured in the mission contract."
+        )
+    if constraints.get("functional") and _has_text(text, r"\bapi\b|endpoint|http"):
+        return (
+            "The mission exists to deliver a defined API capability with clear request behavior and validation expectations. "
+            "The engineering problem is to turn the mission contract into an implementation that behaves predictably for supported and unsupported requests."
+        )
+    if _has_text(text, r"\bcli\b|command[- ]line"):
+        return (
+            "The mission exists to deliver a command-line capability that can be executed and validated locally. "
+            "The engineering problem is to provide the requested behavior with clear execution and verification boundaries."
+        )
+    if text:
+        return "The mission exists to deliver the engineering outcome described by the mission prompt while preserving the assessed constraints, assumptions, and risks."
     return "No mission background was identified during assessment."
+
+
+def _business_outcome(mission, ledger, constraints):
+    text = _mission_text(mission, ledger)
+    if constraints.get("functional") and _has_text(text, r"health"):
+        return "Operators gain a simple, automatable signal for service health, enabling faster validation of whether the service is running and responding as expected."
+    if constraints.get("functional") and _has_text(text, r"\bapi\b|endpoint|http"):
+        return "Consumers gain a predictable API behavior that can be implemented, tested, and validated against the mission acceptance criteria."
+    if _has_text(text, r"\bcli\b|command[- ]line"):
+        return "Users gain a local command-line utility that performs the requested behavior with documented validation evidence."
+    return "No explicit business or operational outcome was identified during assessment."
 
 
 def _bullet(values, empty):
@@ -253,6 +291,17 @@ def _contract_item_lines(values, empty):
     return result
 
 
+def _statement(value):
+    if not isinstance(value, dict):
+        return str(value).strip()
+    return str(value.get("statement", "—")).strip().rstrip(".")
+
+
+def _join_statements(values):
+    statements = [_statement(item) for item in values if isinstance(item, dict)]
+    return "; ".join(statement for statement in statements if statement)
+
+
 def _risk_lines(assessment):
     values = []
     values.extend(assessment.get("risks") or [])
@@ -269,10 +318,10 @@ def _risk_lines(assessment):
     return result
 
 
-def _requirement_lines(requirements, mode):
+def _requirement_lines(requirements, constraints):
     selected = [
         requirement for requirement in requirements
-        if mode != "functional" or not _is_non_functional_requirement(requirement)
+        if not _is_non_functional_requirement(requirement)
     ]
     if not selected:
         return ["- No functional requirements were identified during assessment."]
@@ -281,13 +330,34 @@ def _requirement_lines(requirements, mode):
         lines.append(f"### {requirement.get('id', '—')} — {requirement.get('statement', '—')}")
         lines.append("")
         acceptance = requirement.get("acceptance") or []
-        lines.append("Implementation must satisfy:")
-        lines.extend(f"- {item}" for item in acceptance) if acceptance else lines.append("- No acceptance criteria were identified during assessment.")
+        intro = _requirement_intro(requirement, constraints)
+        if intro:
+            lines.append(intro)
+            lines.append("")
+        if acceptance:
+            lines.append("Required behavior:")
+            lines.extend(f"- {item}" for item in acceptance)
+        else:
+            lines.append("No acceptance criteria were identified during assessment.")
         trace = requirement.get("traceability", {})
         if trace.get("prompt_excerpt"):
-            lines.append(f"- Traceability: {trace.get('prompt_excerpt')}")
+            lines.append("")
+            lines.append(f"Traceability: {trace.get('prompt_excerpt')}")
         lines.append("")
     return lines[:-1] if lines and lines[-1] == "" else lines
+
+
+def _requirement_intro(requirement, constraints):
+    text = requirement.get("statement", "").lower()
+    if "health endpoint" in text:
+        return "The service shall expose the clarified health endpoint as an operational readiness signal. The endpoint behavior is limited to the acceptance criteria and resolved clarification decisions recorded for this mission."
+    if "get-only" in text:
+        return "The API shall enforce the mission's HTTP method boundary. Unsupported methods are part of the required behavior and must be handled deliberately."
+    if "application" in text:
+        return "The application foundation shall reflect the technologies explicitly selected by the mission and clarified during assessment."
+    if constraints.get("functional"):
+        return "The implementation shall deliver the functional behavior captured by the assessed mission contract."
+    return ""
 
 
 def _is_non_functional_requirement(requirement):
@@ -303,18 +373,20 @@ def _non_functional_lines(requirements, constraints):
             supported.append(requirement)
     for requirement in supported:
         lines.append(f"- {requirement.get('id', '—')}: {requirement.get('statement', '—')}")
-    quality_map = {
-        "Security": constraints.get("security", []),
-        "Operational readiness": constraints.get("operational", []),
-        "Testing": constraints.get("testing", []),
-        "Reliability": [],
-        "Observability": [],
-        "Maintainability": [],
-        "Performance": [],
-    }
-    for name, values in quality_map.items():
+    quality_map = [
+        ("Security", constraints.get("security", []), bool(constraints.get("security"))),
+        ("Operational readiness", constraints.get("operational", []), bool(constraints.get("operational"))),
+        ("Testing", constraints.get("testing", []), bool(constraints.get("testing"))),
+        ("Reliability", [], bool(constraints.get("operational"))),
+        ("Observability", [], bool(constraints.get("operational"))),
+        ("Maintainability", [], bool(requirements)),
+        ("Performance", [], bool(constraints.get("functional"))),
+    ]
+    for name, values, applicable in quality_map:
+        if not applicable:
+            continue
         if values:
-            lines.append(f"- {name}: " + "; ".join(item.get("statement", "—") for item in values if isinstance(item, dict)))
+            lines.append(f"- {name}: {_join_statements(values)}.")
         else:
             lines.append(f"- {name}: No explicit {name.lower()} requirements were identified during assessment.")
     return lines
@@ -340,19 +412,28 @@ def _constraint_lines(constraints, resolved_clarifications):
     return lines
 
 
-def _implementation_guidance(requirements, constraints, architecture_references):
+def _implementation_guidance(mission, requirements, constraints, architecture_references):
     if not requirements:
         return ["No implementation guidance could be produced because no requirements were identified during assessment."]
-    lines = [
-        "Implement only the behavior, constraints, and validation obligations captured in the assessed mission contract.",
-        "Preserve the acceptance criteria and traceability recorded for each requirement.",
-    ]
+    text = _mission_text(mission, {"mission_prompt": ""})
+    lines = []
+    if constraints.get("functional") and _has_text(text, r"health"):
+        lines.append("Prioritize a small, clear health-check surface that communicates service availability without broadening the API beyond the mission contract.")
+    elif constraints.get("functional"):
+        lines.append("Prioritize the requested API behavior and keep the implementation aligned with the functional acceptance criteria.")
+    else:
+        lines.append("Prioritize the primary behavior captured in the assessed mission requirements.")
+    if constraints.get("security"):
+        lines.append("Treat rejection behavior, malformed input, and information-disclosure controls as first-class implementation concerns rather than afterthoughts.")
+    if constraints.get("operational"):
+        lines.append("Preserve the operational expectations identified during assessment so the solution can be started and validated in the intended runtime context.")
+    lines.append("Keep implementation choices within the mission constraints and do not add behavior that lacks traceability to the mission contract.")
     if constraints.get("technical"):
-        lines.append("Use the technical constraints identified during assessment: " + "; ".join(item.get("statement", "—") for item in constraints["technical"] if isinstance(item, dict)))
+        lines.append("Honor the explicit technology constraints: " + _join_statements(constraints["technical"]) + ".")
     else:
         lines.append("No explicit technology constraints were identified during assessment.")
     if architecture_references:
-        lines.append("Review and conform to the supplied architecture reference filenames before implementation.")
+        lines.append("Review and conform to the supplied architecture reference filenames before implementation; Battalion records these filenames but does not interpret their contents.")
     return [f"- {line}" for line in lines]
 
 
@@ -376,17 +457,23 @@ def _work_breakdown(requirements, constraints):
 def _testing_strategy(requirements, constraints):
     lines = []
     testing = constraints.get("testing", [])
-    if testing:
-        lines.extend(f"- {item.get('statement', '—')}" for item in testing if isinstance(item, dict))
-    else:
-        lines.append("- No explicit testing constraints were identified during assessment.")
+    lines.append("- Validate the core functional behavior against each acceptance criterion in the mission contract.")
+    statements = " ".join(item.get("statement", "") for item in testing if isinstance(item, dict)).lower()
+    if "happy-path" in statements:
+        lines.append("- Cover the successful request path to prove the expected behavior works under normal input.")
+    if "negative-path" in statements or constraints.get("security"):
+        lines.append("- Cover negative paths for invalid, unsupported, or rejected requests.")
+    if "malicious-request" in statements or any("malformed" in item.get("statement", "").lower() for item in constraints.get("security", []) if isinstance(item, dict)):
+        lines.append("- Cover malicious or malformed input to verify safe rejection and no information disclosure.")
     acceptance_count = sum(1 for requirement in requirements if requirement.get("acceptance"))
     if acceptance_count:
-        lines.append("- Validate every requirement acceptance criterion.")
+        lines.append("- Map test evidence directly to the acceptance criteria for each requirement.")
     if constraints.get("security"):
-        lines.append("- Validate security behavior identified during assessment.")
+        lines.append("- Include security validation for the explicit security constraints identified during assessment.")
     if constraints.get("operational"):
-        lines.append("- Validate operational behavior identified during assessment.")
+        lines.append("- Include operational validation that proves startup and runtime expectations are met.")
+    if not testing and not constraints.get("security") and not constraints.get("operational"):
+        lines.append("- No additional specialized testing constraints were identified during assessment.")
     return lines
 
 
@@ -404,16 +491,25 @@ def _evidence_required(requirements, constraints):
     return lines
 
 
-def _success_criteria(requirements, constraints):
+def _success_criteria(mission, requirements, constraints):
     if not requirements:
         return ["- No mission success criteria could be derived because no requirements were identified during assessment."]
-    lines = [
-        "- The implementation satisfies the assessed mission requirements and acceptance criteria.",
-        "- The solution produces the functional outcomes identified during assessment.",
-        "- Validation evidence demonstrates that the implementation meets the mission contract.",
-    ]
+    text = _mission_text(mission, {"mission_prompt": ""})
+    lines = []
+    if constraints.get("functional") and _has_text(text, r"health"):
+        lines.append("- The service exposes the specified health endpoint and returns the expected successful response for valid GET requests.")
+    elif constraints.get("functional"):
+        lines.append("- The delivered API behavior matches the functional requirements and clarified request contract.")
+    else:
+        lines.append("- The delivered solution performs the primary behavior described by the mission contract.")
+    if constraints.get("security"):
+        lines.append("- Unsupported, invalid, or malicious interactions are handled according to the recorded security constraints without exposing implementation details.")
+    if constraints.get("testing"):
+        lines.append("- Happy-path, negative-path, and applicable malicious-input validation produce reproducible evidence.")
+    else:
+        lines.append("- Validation evidence demonstrates that the acceptance criteria have been met.")
     if constraints.get("operational"):
-        lines.append("- Operational expectations identified during assessment are demonstrated.")
+        lines.append("- Operational evidence shows the solution starts and runs in the required runtime or packaging context.")
     return lines
 
 
@@ -810,7 +906,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.4.0 deterministic mission assessment and planning")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.4.1 deterministic mission assessment and planning")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")

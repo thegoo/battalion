@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "battalion-cli"
-version = "0.4.0"
+version = "0.4.1"
 description = "Deterministic mission assessment and planning"
 requires-python = ">=3.9"
 
