@@ -102,7 +102,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.4.1", output.getvalue())
+        self.assertIn("Battalion v0.4.2", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)

@@ -1,4 +1,4 @@
-# Battalion v0.4.1 — Planning Engine MVP
+# Battalion v0.4.2 — Planning Engine MVP
 
 Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
@@ -425,7 +425,7 @@ battalion status
 
 `status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
 
-For v0.4.1, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
+For v0.4.2, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
 
 ```bash
 battalion assess
@@ -494,7 +494,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.4.1. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.4.2. Battalion does not execute the reviewers.
 
 ## Audit validation
 

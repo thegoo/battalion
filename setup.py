@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="battalion-cli",
-    version="0.4.1",
+    version="0.4.2",
     description="Deterministic mission assessment and planning",
     python_requires=">=3.9",
     packages=find_packages(include=("battalion", "battalion.*")),

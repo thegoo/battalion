@@ -123,15 +123,15 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "",
         "## Readiness Summary",
         "",
-        f"- **Readiness:** {assessment.get('readiness', '—')}",
-        f"- **Recommendation:** {assessment.get('recommendation', '—')}",
     ]
-    lines.extend(f"- {reason}" for reason in assessment.get("readiness_reason", []) or ["No readiness reasons were identified during assessment."])
+    lines.extend(_readiness_summary_lines(assessment))
     lines.extend([
         "",
         "## Mission Classification",
         "",
     ])
+    lines.append("Detected mission attributes:")
+    lines.append("")
     lines.extend(_bullet(assessment.get("mission_attributes"), "No mission attributes were identified during assessment."))
     lines.extend([
         "",
@@ -172,12 +172,16 @@ def render_mission_plan(mission, ledger, assessment, architecture_references=Non
         "## Assumptions",
         "",
     ])
+    lines.append("The following assumptions remain part of the implementation context:")
+    lines.append("")
     lines.extend(_contract_item_lines(ledger.get("assumptions"), "No assumptions were identified during assessment."))
     lines.extend([
         "",
         "## Risks",
         "",
     ])
+    lines.append("The following risks should be reviewed during implementation and assurance:")
+    lines.append("")
     lines.extend(_risk_lines(assessment))
     lines.extend([
         "",
@@ -279,6 +283,24 @@ def _bullet(values, empty):
     return [f"- {value}" for value in values] if values else [f"- {empty}"]
 
 
+def _readiness_summary_lines(assessment):
+    assumptions = assessment.get("assumptions") or []
+    open_risks = assessment.get("risks") or []
+    resolved_risks = assessment.get("resolved_risks") or []
+    lines = [
+        f"- **Readiness:** {assessment.get('readiness', '—')}",
+        f"- **Recommendation:** {assessment.get('recommendation', '—')}",
+        f"- **Assumptions:** {len(assumptions)} documented",
+        f"- **Open risks:** {len(open_risks)} documented",
+    ]
+    if resolved_risks:
+        lines.append(f"- **Resolved risks:** {len(resolved_risks)} dispositioned")
+    reasons = assessment.get("recommendation_reason") or assessment.get("readiness_reason") or []
+    if reasons:
+        lines.append(f"- **Planning note:** {reasons[0]}")
+    return lines
+
+
 def _contract_item_lines(values, empty):
     if not values:
         return [f"- {empty}"]
@@ -302,6 +324,13 @@ def _join_statements(values):
     return "; ".join(statement for statement in statements if statement)
 
 
+def _short_excerpt(value, limit=150):
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 def _risk_lines(assessment):
     values = []
     values.extend(assessment.get("risks") or [])
@@ -312,7 +341,10 @@ def _risk_lines(assessment):
     for item in values:
         if isinstance(item, dict):
             status = item.get("status", "OPEN")
-            result.append(f"- {item.get('id', '—')} [{status}]: {item.get('statement', item)}")
+            line = f"- {item.get('id', '—')} [{status}]: {item.get('statement', item)}"
+            if status == "RESOLVED" and item.get("resolution_reason"):
+                line += f" Resolution: {item['resolution_reason']}"
+            result.append(line)
         else:
             result.append(f"- {item}")
     return result
@@ -342,7 +374,7 @@ def _requirement_lines(requirements, constraints):
         trace = requirement.get("traceability", {})
         if trace.get("prompt_excerpt"):
             lines.append("")
-            lines.append(f"Traceability: {trace.get('prompt_excerpt')}")
+            lines.append(f"Source: mission prompt — {_short_excerpt(trace.get('prompt_excerpt'))}")
         lines.append("")
     return lines[:-1] if lines and lines[-1] == "" else lines
 
@@ -906,7 +938,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.4.1 deterministic mission assessment and planning")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.4.2 deterministic mission assessment and planning")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
