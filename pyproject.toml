@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "battalion-cli"
-version = "0.3.2"
-description = "Deterministic mission assessment before execution planning"
+version = "0.3.6"
+description = "Configurable deterministic mission classification and assessment"
 requires-python = ">=3.9"
 
 [project.scripts]
@@ -15,3 +15,10 @@ battalion = "battalion.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["battalion*"]
+
+[tool.setuptools.package-data]
+battalion = ["attributes.yml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

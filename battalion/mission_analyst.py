@@ -4,9 +4,15 @@ import re
 from typing import Any, Dict, List, Sequence
 
 
-FRAMEWORK_TERMS = ("express", "fastapi", "flask", "django", "nestjs", "koa", "hapi", "spring", "asp.net")
+FRAMEWORK_TERMS = ("express", "fastify", "fastapi", "flask", "django", "nestjs", "koa", "hapi", "spring", "asp.net")
 DEPLOYMENT_TERMS = ("production", "aws", "azure", "gcp", "cloud", "kubernetes", "serverless", "hosting")
 SECURITY_TERMS = ("auth", "login", "password", "token", "jwt", "security", "permission", "secret", "encrypt", "identity")
+CURRENT_VERSION_PATTERN = r"\b(?:current|latest|latest\s+stable|current\s+supported|current\s+guidance|latest\s+guidance)\b"
+EXPLICIT_VERSION_PATTERNS = (
+    r"\.NET\s+\d+(?:\.\d+)?",
+    r"Node(?:\.js|js)?\s+\d+(?:\.\d+)?",
+    r"OWASP(?:\s+API\s+Security)?(?:\s+Top\s*10)?\s+\d{4}",
+)
 
 
 def _matches(prompt: str, pattern: str) -> bool:
@@ -57,6 +63,13 @@ def extract_constraints(prompt: str) -> Dict[str, List[Dict[str, str]]]:
         add("technical", "TypeScript is required.", (r"typescript",))
     if _matches(prompt, r"\bnode(?:\.js|js)?\b"):
         add("technical", "Node.js is required.", (r"\bnode",))
+    if _matches(prompt, r"\.net\b|\bdotnet\b|\basp\.net\b|\bc#\b"):
+        add("technical", ".NET is required.", (r"\.net", r"dotnet", r"asp\.net", r"c#"))
+    for version_pattern in EXPLICIT_VERSION_PATTERNS:
+        match = re.search(version_pattern, prompt, flags=re.IGNORECASE)
+        if match:
+            value = prompt[match.start():match.end()]
+            add("technical", f"{value} is specified.", (re.escape(value),))
     if _matches(prompt, r"\bdocker\b|\bcontaineri[sz]ed?\b"):
         add("technical", "Docker packaging is required.", (r"docker", r"container"))
 
@@ -157,10 +170,31 @@ def _clarifications(prompt: str, constraints, created_at: str) -> List[Dict[str,
         add("What application framework should be used?", _source(endpoint_items, prompt), "The prompt requires API behavior but does not select a framework.", _ids(endpoint_items))
     if health_items and not _matches(prompt, r"timestamp\s+(?:format|as)|iso[- ]?8601|unix\s+(?:time|epoch)|rfc\s*3339"):
         add("What timestamp format should be returned?", _source(health_items, prompt), "The health response contract does not define a timestamp format.", _ids(health_items))
-    owasp_items = _items(constraints, "security", "OWASP")
-    if owasp_items and not _matches(prompt, r"owasp\s+(?:asvs|top\s*10|api\s+security|\d{4}|v\d)"):
-        add("Which OWASP standard or version should govern error handling?", _source(owasp_items, prompt), "OWASP guidance is required but its control baseline is not specified.", _ids(owasp_items))
     return questions
+
+
+def _technology_constraint_items(constraints: Dict[str, List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    return [
+        item for category in ("technical", "security", "operational")
+        for item in constraints.get(category, [])
+        if any(term in item.get("statement", "").lower() for term in (
+            "typescript", "node", ".net", "owasp", "docker", "container", "framework", "runtime",
+        ))
+    ]
+
+
+def _current_or_versioned_guidance(prompt: str) -> bool:
+    return _matches(prompt, CURRENT_VERSION_PATTERN) or any(_matches(prompt, pattern) for pattern in EXPLICIT_VERSION_PATTERNS)
+
+
+def _append_contract_item(values: List[Dict[str, Any]], prefix: str, statement: str, traceability: Dict[str, Any]) -> None:
+    if any(item.get("statement") == statement for item in values):
+        return
+    values.append({
+        "id": f"{prefix}-{len(values) + 1:03d}",
+        "statement": statement,
+        "traceability": traceability,
+    })
 
 
 def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
@@ -248,7 +282,7 @@ def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> 
     if security_items or any(term in prompt.lower() for term in SECURITY_TERMS):
         append(
             "Implement secure error handling",
-            ["Malformed requests receive controlled error responses", "Error responses do not expose stack traces, secrets, or implementation details", "Security-relevant failures are handled consistently with the clarified OWASP baseline"],
+            ["Malformed requests receive controlled error responses", "Error responses do not expose stack traces, secrets, or implementation details", "Security-relevant failures are handled consistently with specified or current security guidance"],
             [_review("secops", "Assess OWASP alignment, information disclosure, and malformed-request handling."), _review("tester", "Validate safe behavior for invalid and malicious requests.")],
             "developer", security_items, "The prompt explicitly requires security guidance or security-sensitive behavior.",
         )
@@ -287,6 +321,31 @@ def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> 
         "statement": "The explicitly named development tools are available in the local validation environment." if constraints["technical"] else "Local filesystem and process execution are available for validation.",
         "traceability": _trace(first_excerpt, "This is a low-risk execution prerequisite and does not select an unspecified framework or interface contract.", _ids(constraints["technical"])),
     }]
+    technology_items = _technology_constraint_items(constraints)
+    if technology_items:
+        guidance_statement = "Current or explicitly specified technology versions are intentional."
+        if _current_or_versioned_guidance(prompt):
+            guidance_statement = "Current or explicitly specified technology and standards versions are intentional and preserved as mission intent."
+        _append_contract_item(
+            assumptions,
+            "A",
+            guidance_statement,
+            _trace(
+                _source(technology_items, prompt),
+                "Battalion assesses engineering readiness and does not determine framework, runtime, platform, library, package, or standards compatibility.",
+                _ids(technology_items),
+            ),
+        )
+        _append_contract_item(
+            assumptions,
+            "A",
+            "The engineering team is responsible for selecting mutually compatible dependency versions.",
+            _trace(
+                _source(technology_items, prompt),
+                "Compatibility verification occurs during implementation, testing, and assurance rather than readiness assessment.",
+                _ids(technology_items),
+            ),
+        )
     risks = []
     if any("framework" in item["question"].lower() for item in clarifications):
         risks.append({
@@ -298,10 +357,10 @@ def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> 
             "id": f"RISK-{len(risks) + 1:03d}", "statement": "The target deployment environment is not specified.",
             "traceability": _trace(prompt, "The mission describes the solution without identifying its eventual deployment target.", _ids(constraints["operational"])),
         })
-    if owasp:
+    if len(technology_items) >= 2:
         risks.append({
-            "id": f"RISK-{len(risks) + 1:03d}", "statement": "The applicable OWASP standard or version requires clarification.",
-            "traceability": _trace(_source(owasp, prompt), "OWASP guidance is explicit but its control baseline is ambiguous.", _ids(owasp)),
+            "id": f"RISK-{len(risks) + 1:03d}", "statement": "Technology compatibility must be validated during implementation and assurance.",
+            "traceability": _trace(_source(technology_items, prompt), "Battalion does not maintain compatibility matrices or dependency compatibility graphs.", _ids(technology_items)),
         })
     if not risks:
         risks.append({

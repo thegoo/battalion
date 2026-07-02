@@ -6,6 +6,7 @@ from pathlib import Path
 from .agents import standing_team
 from .assessment import infer_attributes, write_assessment
 from .assurance import assure
+from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .reporting import render_report
@@ -45,6 +46,7 @@ def init(args, cwd):
     workspace.mkdir(); (workspace / "reports").mkdir()
     write_yaml(workspace / "mission.yaml", {"id": "M-001", "title": title, "objective": objective, "mission_prompt": mission_prompt, "original_prompt": mission_prompt, "status": "initialized", "created_at": timestamp(), "doctrine": DOCTRINE})
     write_yaml(workspace / "agents.yaml", standing_team())
+    write_default_attribute_catalog(workspace / "attributes.yml")
     write_yaml(workspace / "ledger.yaml", {"mission_id": "M-001", "mission_prompt": mission_prompt, "requirements": [], "assumptions": [], "risks": []})
     (workspace / "events.jsonl").touch()
     append_event(workspace, "mission_initialized", {"mission_id": "M-001"})
@@ -251,8 +253,7 @@ def clarify(args, cwd):
         raise SystemExit("Mission contract does not contain a valid clarifications list. Run 'battalion assess' first.")
     open_items = [item for item in clarifications if item.get("status") == "open"]
     print(f"Clarifications: {len(open_items)} open, {sum(item.get('status') == 'resolved' for item in clarifications)} resolved")
-    for item in open_items:
-        print(f"\n{item['id']}\n{item['question']}\nAnswer: {item.get('answer') or 'None'}")
+    print_open_clarifications(open_items)
 
     actions = []
     actions.extend(_clarification_action(value, "resolved") for value in (args.answer or []))
@@ -265,14 +266,11 @@ def clarify(args, cwd):
             return
         if not sys.stdin.isatty():
             raise SystemExit("Provide --answer Q-ID=value and --resolver when input is non-interactive.")
-        for item in open_items:
-            answer = input(f"\n{item['id']} — {item['question']}\n> ").strip()
-            if answer:
-                actions.append((item["id"], "resolved", answer))
+        actions = collect_clarification_actions(open_items)
         if actions and not resolver:
-            resolver = input("\nResolved by: ").strip()
+            resolver = prompt_user("\nResolved by: ").strip()
     elif not resolver and sys.stdin.isatty():
-        resolver = input("Resolved by: ").strip()
+        resolver = prompt_user("Resolved by: ").strip()
     if actions and not resolver:
         raise SystemExit("Provide --resolver for clarification actions.")
     if not actions:
@@ -284,6 +282,49 @@ def clarify(args, cwd):
     resolved_count = sum(status == "resolved" for _, status, _ in actions)
     print(f"\nApplied {len(actions)} clarification action(s); reconciled {len(updated_requirements)} requirement(s).")
     print(f"Summary: {resolved_count} resolved, {remaining_open} still open.")
+
+
+def print_open_clarifications(open_items):
+    if not open_items:
+        return
+    for item in open_items:
+        print(f"\n{item['id']}\n{item['question']}\nAnswer: {item.get('answer') or 'None'}")
+
+
+def prompt_user(message):
+    try:
+        return input(message)
+    except EOFError:
+        return ""
+
+
+def collect_clarification_actions(open_items):
+    actions = []
+    while True:
+        choice = prompt_user("\nClarify action: [a]nswer all, answer [o]ne, [s]kip, [e]xit\n> ").strip().lower()
+        if choice in {"", "s", "skip"}:
+            return actions
+        if choice in {"e", "exit", "q", "quit"}:
+            return actions
+        if choice in {"a", "all", "answer all"}:
+            for item in open_items:
+                if any(existing_id == item["id"] for existing_id, _, _ in actions):
+                    continue
+                answer = prompt_user(f"\n{item['id']} — {item['question']}\nPress Enter to skip.\n> ").strip()
+                if answer:
+                    actions.append((item["id"], "resolved", answer))
+            return actions
+        if choice in {"o", "one", "answer one"}:
+            clarification_id = prompt_user("Clarification ID: ").strip()
+            item = next((entry for entry in open_items if entry.get("id") == clarification_id), None)
+            if item is None:
+                print(f"Unknown open clarification: {clarification_id}")
+                continue
+            answer = prompt_user(f"\n{item['id']} — {item['question']}\nPress Enter to skip.\n> ").strip()
+            if answer:
+                actions.append((item["id"], "resolved", answer))
+            return actions
+        print("Choose answer all, answer one, skip, or exit.")
 
 
 def dispatch(args, cwd):
@@ -388,23 +429,84 @@ def assessment(args, cwd):
     workspace = workspace_or_exit(cwd)
     try:
         ensure_assessed_contract(workspace)
-        resolve_assessment_clarifications(workspace, args)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     try:
         result = write_assessment(workspace)
+        if args.interactive:
+            if resolve_assessment_clarifications(workspace, args, result):
+                result = write_assessment(workspace)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    print(f"Readiness: {result['readiness']}")
-    print("Readiness Reasons:")
-    for reason in result.get("readiness_reason", []):
-        print(f"- {reason}")
-    print(f"Recommendation: {result['recommendation']}")
-    print("Recommendation Rationale:")
-    for reason in result.get("recommendation_reason", []):
-        print(f"- {reason}")
+    print_assessment_summary(result)
     print(f"Assessment JSON: {workspace / 'assessment.json'}")
     print(f"Assessment Report: {workspace / 'assessment.md'}")
+
+
+def print_assessment_summary(result):
+    print(f"Readiness: {result['readiness']}")
+    print(f"\nEngineering Compatibility Disclaimer\n- {result['engineering_compatibility_disclaimer']}")
+    print("\nMission Classification")
+    attributes = result.get("mission_classification", {}).get("attributes", [])
+    if not attributes:
+        print("- None")
+    for item in attributes:
+        evidence = ", ".join(
+            f"{entry.get('indicator', '—')} from {entry.get('source', '—')}"
+            for entry in item.get("classification_evidence", [])
+        ) or "None"
+        print(f"- {item.get('attribute', '—')}: {item.get('decision', 'not_classified')}; evidence [{evidence}]; hit count {item.get('hit_count', 0)}; threshold {item.get('threshold', 1)}")
+    print("\nPrimary Findings")
+    for finding in primary_assessment_findings(result):
+        print(f"- {finding}")
+    print("\nOutstanding Clarifications")
+    clarifications = result.get("outstanding_clarifications", [])
+    if clarifications:
+        for item in clarifications:
+            print(f"- {item.get('id', '—')}: {item.get('question', '—')}")
+    else:
+        print("- None")
+    print(f"\nRecommendation: {result['recommendation']}")
+    for reason in result.get("recommendation_reason", []):
+        print(f"- {reason}")
+    if clarifications:
+        print("\nRun:\n  battalion clarify")
+
+
+def primary_assessment_findings(result):
+    findings = []
+    for item in result.get("discipline_findings", []):
+        if item.get("status") != "NEEDS_CLARIFICATION":
+            continue
+        findings.append(_plain_finding(item.get("recommendation") or item.get("description") or item.get("obligation")))
+    for risk in result.get("risks", []):
+        if isinstance(risk, dict):
+            findings.append(risk.get("statement", "Review documented risk."))
+    if not findings and result.get("readiness") in {"READY", "READY_WITH_RISK"}:
+        findings.append("No blocking readiness findings remain.")
+    if not findings:
+        findings.append("No primary findings.")
+    deduped = []
+    for finding in findings:
+        if finding and finding not in deduped:
+            deduped.append(finding)
+    return deduped[:6]
+
+
+def _plain_finding(message):
+    mapping = {
+        "Identify implementation technology before implementation begins.": "Implementation technology has not been selected.",
+        "Identify implementation technology before coding begins.": "Implementation technology has not been selected.",
+        "Confirm runtime selection before implementation begins.": "Runtime selection has not been confirmed.",
+        "Identify the deployment or execution environment before implementation begins.": "Deployment environment is unspecified.",
+        "Define the API contract before implementation begins.": "API contract details are incomplete.",
+        "Define endpoint path and HTTP method expectations before implementation begins.": "HTTP endpoint contract details are incomplete.",
+        "Specify secure error-handling expectations before implementation begins.": "Secure error-handling expectations are unspecified.",
+        "Specify authentication disposition before implementation begins.": "Authentication expectations are unspecified.",
+        "Specify authorization disposition before implementation begins.": "Authorization expectations are unspecified.",
+        "Resolve open clarifications before implementation begins.": "Open clarifications must be resolved before planning.",
+    }
+    return mapping.get(message, message or "Review readiness finding.")
 
 
 def ensure_assessed_contract(workspace):
@@ -436,31 +538,30 @@ def ensure_assessed_contract(workspace):
         }, actor="mission_analyst")
 
 
-def resolve_assessment_clarifications(workspace, args):
+def resolve_assessment_clarifications(workspace, args, assessment_result):
     ledger = read_yaml(workspace / "ledger.yaml")
     clarifications = ledger.get("clarifications", [])
     if not isinstance(clarifications, list):
-        return
+        return False
     open_items = [item for item in clarifications if isinstance(item, dict) and item.get("status") == "open"]
     if not open_items:
-        return
+        return False
     if not sys.stdin.isatty():
-        print("Clarifications are required before readiness can be finalized. Run battalion clarify.")
-        return
-    print("Clarifications are required before readiness can be finalized.")
-    actions = []
-    for item in open_items:
-        answer = input(f"\n{item['id']} — {item['question']}\nPress Enter to skip.\n> ").strip()
-        if answer:
-            actions.append((item["id"], "resolved", answer))
+        raise SystemExit("Interactive assessment requires a terminal. Run battalion clarify or use --answer with battalion clarify.")
+    print_assessment_summary(assessment_result)
+    print("\nInteractive assessment clarification resolution")
+    print_open_clarifications(open_items)
+    actions = collect_clarification_actions(open_items)
     if not actions:
         print("\nNo clarification answers provided; readiness will remain NOT_READY.")
-        return
-    resolver = args.resolver or input("\nResolved by: ").strip()
+        return False
+    resolver = args.resolver or prompt_user("\nResolved by: ").strip()
     if not resolver:
         raise SystemExit("Provide --resolver for clarification actions.")
     apply_clarification_actions(workspace, ledger, actions, resolver)
     print(f"\nResolved {len(actions)} clarification(s) during assessment.")
+    print("Re-running assessment after clarification updates.\n")
+    return True
 
 
 def assurance(args, cwd):
@@ -486,7 +587,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.3.2 init-assess-plan workflow")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.3.6 configurable mission classification")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -510,6 +611,7 @@ def parser():
     p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
     commands.add_parser("status")
     p = commands.add_parser("assess")
+    p.add_argument("--interactive", action="store_true", help="Prompt for outstanding clarification answers during assessment")
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
     commands.add_parser("assure"); commands.add_parser("report")
     return result

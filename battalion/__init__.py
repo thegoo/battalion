@@ -1,3 +1,3 @@
-"""Battalion v0.3.2 init-assess-plan workflow."""
+"""Battalion v0.3.6 configurable mission classification spine."""
 
-__version__ = "0.3.2"
+__version__ = "0.3.6"
