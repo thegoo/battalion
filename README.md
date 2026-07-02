@@ -111,7 +111,7 @@ Mission Assurance rejects generated contracts whose trace excerpt does not occur
 
 ### Clarifications versus assumptions
 
-Mission Analyst creates clarification artifacts rather than silently selecting material details. A health API without an endpoint path, framework, timestamp format, or specific OWASP baseline produces open `Q-xxx` questions. Assumptions are limited to low-risk execution prerequisites such as availability of tools explicitly named by the prompt.
+Mission Analyst creates clarification artifacts rather than silently selecting material details. A health API without an endpoint path, framework, or timestamp format produces open `Q-xxx` questions. Version and compatibility choices are not clarification blockers by themselves; current or explicitly specified framework, runtime, platform, library, package, and standards versions are treated as intentional mission input.
 
 Clarifications are first-class mission artifacts with `open`, `resolved`, `superseded`, and `rejected` states. Each artifact stores its question, answer, creation time, resolution time, resolver, prompt traceability, and append-only decision history.
 
@@ -133,8 +133,7 @@ For non-interactive use, repeat `--answer`:
 battalion clarify --resolver "Jesse Williams" \
   --answer "Q-001=/health" \
   --answer "Q-002=Fastify" \
-  --answer "Q-003=ISO-8601 UTC" \
-  --answer "Q-004=OWASP API Security Top 10 2023"
+  --answer "Q-003=ISO-8601 UTC"
 ```
 
 Other terminal decisions use the same `Q-ID=value` form:
@@ -144,7 +143,7 @@ battalion clarify --resolver "Jesse Williams" --reject "Q-002=Framework decision
 battalion clarify --resolver "Jesse Williams" --supersede "Q-001=/status"
 ```
 
-Resolution refines requirements in place. For the example above, the contract selects Fastify, changes the health endpoint to `/health`, requires the clarified timestamp format, narrows OWASP acceptance and SecOps scope, and updates related assumptions and risks. Requirement IDs remain stable and no duplicate requirements are created.
+Resolution refines requirements in place. For the example above, the contract selects Fastify, changes the health endpoint to `/health`, requires the clarified timestamp format, and updates related assumptions and risks. Requirement IDs remain stable and no duplicate requirements are created.
 
 Every lifecycle transition appends both contract history and an audit event: `clarification_created`, `clarification_resolved`, `clarification_superseded`, or `clarification_rejected`. Reconciliation emits `mission_contract_reconciled`. This keeps human decisions reconstructable while preserving a schema future agent implementations can consume.
 
@@ -282,6 +281,24 @@ Mission Assessment uses built-in Engineering Obligation Packs for Mission Analys
 Assessment receives mission attributes from Mission Classification. `assessment.json` also records `attribute_sources` as a compact compatibility map for the detected attributes.
 
 Risks are categorized deterministically as Security, Architecture, Operational, Implementation, or Documentation. If a clarification resolves a previously unknown item, the assessment marks the corresponding risk as resolved in `resolved_risks` instead of continuing to present it as an open contradiction. The canonical JSON also includes `resolved_assumptions` and `finding_categories`.
+
+## Engineering Compatibility Doctrine
+
+Battalion intentionally does not determine technology compatibility.
+
+Battalion assesses engineering readiness, not implementation correctness.
+
+Framework, runtime, library, package, platform, operating system, cloud service, and standards compatibility remain the responsibility of the engineering team.
+
+Compatibility should be validated during implementation, testing, and assurance.
+
+Battalion assumes that:
+
+- Current or explicitly specified versions are intentional.
+- Engineering teams will select mutually compatible technologies.
+- Compatibility verification is part of implementation and assurance, not readiness assessment.
+
+This design intentionally prevents Battalion from becoming a dependency resolver or maintaining framework compatibility matrices while keeping the assessment deterministic and maintainable.
 
 ## Mission planning
 

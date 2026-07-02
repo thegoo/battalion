@@ -375,6 +375,53 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "open" for item in ledger["clarifications"]))
         self.assertFalse(any("Express" in item["statement"] for item in ledger["assumptions"]))
 
+    def test_current_owasp_guidance_does_not_produce_blocking_clarification(self):
+        self.initialize_with_prompt("Build a secure command line tool. Follow current OWASP guidance.")
+        self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        questions = [item["question"] for item in ledger.get("clarifications", [])]
+        self.assertFalse(any("OWASP" in question for question in questions))
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertFalse(any("OWASP" in item["question"] for item in assessment["outstanding_clarifications"]))
+
+    def test_latest_dotnet_lts_does_not_produce_blocking_clarification(self):
+        self.initialize_with_prompt("Build a .NET service using latest .NET LTS.")
+        self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        questions = [item["question"] for item in ledger.get("clarifications", [])]
+        self.assertFalse(any("version" in question.lower() or ".NET" in question for question in questions))
+
+    def test_explicit_versions_are_preserved_without_compatibility_questions(self):
+        self.initialize_with_prompt("Build a .NET 8 REST API that follows OWASP API Security Top 10 2023.")
+        self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        technical = [item["statement"] for item in ledger["constraints"]["technical"]]
+        self.assertIn(".NET 8 is specified.", technical)
+        self.assertIn("OWASP API Security Top 10 2023 is specified.", technical)
+        self.assertIn(
+            "OWASP API Security Top 10 2023.",
+            read_yaml(self.workspace / "mission.yaml")["mission_prompt"],
+        )
+        questions = [item["question"] for item in ledger.get("clarifications", [])]
+        self.assertFalse(any("version" in question.lower() for question in questions))
+
+    def test_multiple_technologies_create_non_blocking_compatibility_assumption_and_risk(self):
+        prompt = (
+            "Build a Fastify TypeScript Node REST API running in Docker with /health. "
+            "Return HTTP 200. Follow current OWASP guidance. Create happy-path and negative-path tests."
+        )
+        self.initialize_with_prompt(prompt)
+        self.run_cli("assess")
+        ledger = read_yaml(self.ledger_path)
+        assumptions = [item["statement"] for item in ledger["assumptions"]]
+        risks = [item["statement"] for item in ledger["risks"]]
+        self.assertIn("Current or explicitly specified technology and standards versions are intentional and preserved as mission intent.", assumptions)
+        self.assertIn("The engineering team is responsible for selecting mutually compatible dependency versions.", assumptions)
+        self.assertIn("Technology compatibility must be validated during implementation and assurance.", risks)
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(assessment["readiness"], "READY_WITH_RISK")
+        self.assertEqual(assessment["recommendation"], "Proceed to Implementation")
+
     def test_mission_prompt_remains_immutable_during_contract_generation(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         before = (self.workspace / "mission.yaml").read_bytes()
@@ -406,7 +453,6 @@ class BattalionCliTests(unittest.TestCase):
             "--answer", "Q-001=/health",
             "--answer", "Q-002=Fastify",
             "--answer", "Q-003=ISO-8601 UTC",
-            "--answer", "Q-004=OWASP API Security Top 10 2023",
         )
         evidence = self.cwd / "evidence" / "mission-validation.txt"
         evidence.parent.mkdir()
@@ -429,11 +475,10 @@ class BattalionCliTests(unittest.TestCase):
             "--answer", "Q-001=/health",
             "--answer", "Q-002=Fastify",
             "--answer", "Q-003=ISO-8601 UTC",
-            "--answer", "Q-004=OWASP API Security Top 10 2023",
         )
         ledger = read_yaml(self.ledger_path)
-        self.assertIn("Applied 4 clarification action(s)", output)
-        self.assertIn("Summary: 4 resolved, 0 still open.", output)
+        self.assertIn("Applied 3 clarification action(s)", output)
+        self.assertIn("Summary: 3 resolved, 0 still open.", output)
         self.assertTrue(all(item["status"] == "resolved" for item in ledger["clarifications"]))
         self.assertEqual(ledger["clarifications"][0]["answer"], "/health")
         self.assertEqual(ledger["clarifications"][0]["resolved_by"], "Jesse Williams")
@@ -443,7 +488,7 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(requirements["R-002"]["statement"], "Implement /health health endpoint")
         self.assertIn("GET /health returns HTTP 200", requirements["R-002"]["acceptance"])
         self.assertIn("Response timestamp uses ISO-8601 UTC format", requirements["R-002"]["acceptance"])
-        self.assertIn("Error handling follows OWASP API Security Top 10 2023", requirements["R-005"]["acceptance"])
+        self.assertIn("Security-relevant failures are handled consistently with specified or current security guidance", requirements["R-005"]["acceptance"])
         self.assertEqual(len(requirements), 7)
 
     def test_clarification_resolution_creates_auditable_history(self):
@@ -458,7 +503,7 @@ class BattalionCliTests(unittest.TestCase):
         created = [event for event in events if event["type"] == "clarification_created"]
         resolved = [event for event in events if event["type"] == "clarification_resolved"]
         reconciled = [event for event in events if event["type"] == "mission_contract_reconciled"]
-        self.assertEqual(len(created), 4)
+        self.assertEqual(len(created), 3)
         self.assertEqual(len(resolved), 1)
         self.assertEqual(resolved[0]["actor"], "Jesse Williams")
         self.assertEqual(resolved[0]["details"]["value"], "/health")
@@ -480,49 +525,46 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
         before = self.result()
-        self.assertEqual(before.clarification_counts["open"], 4)
+        self.assertEqual(before.clarification_counts["open"], 3)
         self.assertEqual(before.clarification_counts["resolved"], 0)
         self.run_cli(
             "clarify", "--resolver", "Jesse Williams",
             "--answer", "Q-001=/health",
             "--answer", "Q-002=Fastify",
             "--answer", "Q-003=ISO-8601 UTC",
-            "--answer", "Q-004=OWASP API Security Top 10 2023",
         )
         after = self.result()
         self.assertEqual((after.status, after.recommendation), ("AMBER", "NO-GO"))
         self.assertEqual(after.clarification_counts["open"], 0)
-        self.assertEqual(after.clarification_counts["resolved"], 4)
+        self.assertEqual(after.clarification_counts["resolved"], 3)
         self.assertFalse(any("Clarification" in finding or "Q-" in finding for finding in after.findings))
         self.assertTrue(any("Mission work remains open" in finding for finding in after.findings))
 
     def test_interactive_clarify_collects_human_answers(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        responses = iter(["a", "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
+        responses = iter(["a", "/health", "Fastify", "ISO-8601 UTC", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
-        self.assertEqual([item["answer"] for item in clarifications], [
-            "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023",
-        ])
+        self.assertEqual([item["answer"] for item in clarifications], ["/health", "Fastify", "ISO-8601 UTC"])
         self.assertTrue(all(item["status"] == "resolved" for item in clarifications))
-        self.assertIn("Summary: 4 resolved, 0 still open.", output)
+        self.assertIn("Summary: 3 resolved, 0 still open.", output)
         event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
-        self.assertEqual(event_types.count("clarification_resolved"), 4)
+        self.assertEqual(event_types.count("clarification_resolved"), 3)
 
     def test_interactive_clarify_blank_answer_leaves_clarification_open(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        responses = iter(["a", "/health", "", "", "", "Jesse Williams"])
+        responses = iter(["a", "/health", "", "", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
         self.assertEqual(clarifications[0]["status"], "resolved")
         self.assertEqual(clarifications[0]["answer"], "/health")
-        self.assertEqual([item["status"] for item in clarifications[1:]], ["open", "open", "open"])
-        self.assertEqual([item.get("answer") for item in clarifications[1:]], [None, None, None])
-        self.assertIn("Summary: 1 resolved, 3 still open.", output)
+        self.assertEqual([item["status"] for item in clarifications[1:]], ["open", "open"])
+        self.assertEqual([item.get("answer") for item in clarifications[1:]], [None, None])
+        self.assertIn("Summary: 1 resolved, 2 still open.", output)
         events = [json.loads(line) for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         resolved = [event for event in events if event["type"] == "clarification_resolved"]
         self.assertEqual(len(resolved), 1)
@@ -531,12 +573,12 @@ class BattalionCliTests(unittest.TestCase):
     def test_interactive_clarify_all_blank_answers_do_not_require_resolver(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        responses = iter(["a", "", "", "", ""])
+        responses = iter(["a", "", "", ""])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("clarify")
         clarifications = read_yaml(self.ledger_path)["clarifications"]
         self.assertTrue(all(item["status"] == "open" for item in clarifications))
-        self.assertIn("Summary: 0 resolved, 4 still open.", output)
+        self.assertIn("Summary: 0 resolved, 3 still open.", output)
         event_types = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         self.assertNotIn("clarification_resolved", event_types)
 
@@ -548,7 +590,6 @@ class BattalionCliTests(unittest.TestCase):
         self.assertNotIn("\nQ-001\n", output)
         self.assertIn("\nQ-002\n", output)
         self.assertIn("\nQ-003\n", output)
-        self.assertIn("\nQ-004\n", output)
         clarifications = read_yaml(self.ledger_path)["clarifications"]
         self.assertEqual(clarifications[0]["status"], "resolved")
         self.assertEqual(clarifications[1]["status"], "resolved")
@@ -680,12 +721,12 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_assess_interactively_resolves_clarifications_when_answers_are_provided(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
-        responses = iter(["a", "/health", "Fastify", "ISO-8601 UTC", "OWASP API Security Top 10 2023", "Jesse Williams"])
+        responses = iter(["a", "/health", "Fastify", "ISO-8601 UTC", "Jesse Williams"])
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
             output = self.run_cli("assess", "--interactive")
         ledger = read_yaml(self.ledger_path)
         self.assertTrue(all(item["status"] == "resolved" for item in ledger["clarifications"]))
-        self.assertIn("Resolved 4 clarification(s) during assessment.", output)
+        self.assertIn("Resolved 3 clarification(s) during assessment.", output)
         assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
         self.assertEqual(assessment["recommendation"], "Proceed to Implementation")
 
@@ -718,7 +759,6 @@ class BattalionCliTests(unittest.TestCase):
             "--answer", "Q-001=/health",
             "--answer", "Q-002=Fastify",
             "--answer", "Q-003=ISO-8601 UTC",
-            "--answer", "Q-004=OWASP API Security Top 10 2023",
         )
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError("interactive assess prompted without open clarifications")):
             output = self.run_cli("assess", "--interactive")
@@ -817,7 +857,6 @@ class BattalionCliTests(unittest.TestCase):
             "--answer", "Q-001=/health",
             "--answer", "Q-002=Fastify",
             "--answer", "Q-003=ISO-8601 UTC",
-            "--answer", "Q-004=OWASP API Security Top 10 2023",
         )
         self.run_cli("assess")
         after = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
@@ -836,14 +875,12 @@ class BattalionCliTests(unittest.TestCase):
             "--answer", "Q-001=/health",
             "--answer", "Q-002=Fastify",
             "--answer", "Q-003=ISO-8601 UTC",
-            "--answer", "Q-004=OWASP API Security Top 10 2023",
         )
         self.run_cli("assess")
         assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
         open_risk_text = " ".join(item["statement"] for item in assessment["risks"])
         resolved_risk_text = " ".join(item["statement"] for item in assessment["resolved_risks"])
         self.assertNotIn("Framework selection remains unresolved", open_risk_text)
-        self.assertNotIn("OWASP standard or version requires clarification", open_risk_text)
         self.assertIn("Framework selection remains unresolved", resolved_risk_text)
         self.assertTrue(all(item["status"] == "RESOLVED" for item in assessment["resolved_risks"]))
 
