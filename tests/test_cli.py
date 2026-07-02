@@ -102,7 +102,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.3.6", output.getvalue())
+        self.assertIn("Battalion v0.4.0", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -788,14 +788,84 @@ class BattalionCliTests(unittest.TestCase):
     def test_plan_consumes_assessment_output(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
-        output = self.run_cli("plan")
+        self.run_cli(
+            "clarify", "--resolver", "Jesse Williams",
+            "--answer", "Q-001=/health",
+            "--answer", "Q-002=Fastify",
+            "--answer", "Q-003=ISO-8601 UTC",
+        )
+        self.run_cli("assess")
+        output = self.run_cli("plan", "--architecture", "entra-sso.md", "--architecture", "api-security.md")
         plan_path = self.workspace / "mission-plan.md"
         self.assertTrue(plan_path.is_file())
         plan = plan_path.read_text(encoding="utf-8")
-        self.assertIn("# Battalion Mission Plan", plan)
-        self.assertIn("## Assessment Gate", plan)
+        for heading in (
+            "# Mission", "## Background", "## Mission Objective", "## Business Outcome",
+            "## Readiness Summary", "## Mission Classification", "## Functional Requirements",
+            "## Non-Functional Requirements", "## Engineering Constraints", "## Architecture References",
+            "## Assumptions", "## Risks", "## Implementation Guidance", "## Suggested Work Breakdown",
+            "## Testing Strategy", "## Evidence Required", "## Definition of Done", "## Out of Scope",
+            "## Mission Success Criteria",
+        ):
+            self.assertIn(heading, plan)
+        self.assertIn("entra-sso.md", plan)
+        self.assertIn("api-security.md", plan)
+        self.assertIn("Implementation shall conform to these engineering references.", plan)
+        self.assertIn("READY_WITH_RISK", plan)
+        self.assertIn("REST_API", plan)
+        self.assertIn("GET /health returns HTTP 200", plan)
+        self.assertIn("Current or explicitly specified technology", plan)
+        self.assertIn("Technology compatibility must be validated", plan)
+        self.assertIn("No explicit business outcome was identified during assessment.", plan)
+        self.assertIn("No explicit performance requirements were identified during assessment.", plan)
         self.assertIn("R-001", plan)
         self.assertIn("Generated execution-ready mission plan", output)
+
+    def test_plan_refuses_not_ready_missions(self):
+        self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
+        self.run_cli("assess")
+        with self.assertRaises(SystemExit) as raised:
+            main(["plan"], self.cwd)
+        self.assertIn("Current readiness: NOT_READY", str(raised.exception))
+        self.assertFalse((self.workspace / "mission-plan.md").exists())
+
+    def test_plan_refuses_partially_ready_missions(self):
+        self.initialize_with_prompt("Build a public REST API endpoint.")
+        self.run_cli("assess")
+        self.run_cli("clarify", "--resolver", "Jesse Williams", "--answer", "Q-001=/public", "--answer", "Q-002=Fastify")
+        self.run_cli("assess")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(assessment["readiness"], "PARTIALLY_READY")
+        with self.assertRaises(SystemExit) as raised:
+            main(["plan"], self.cwd)
+        self.assertIn("Current readiness: PARTIALLY_READY", str(raised.exception))
+
+    def test_plan_executes_for_ready_assessment(self):
+        self.initialize_with_prompt("Build a command-line utility.")
+        self.run_cli("assess")
+        assessment_path = self.workspace / "assessment.json"
+        assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
+        assessment["readiness"] = "READY"
+        assessment_path.write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.run_cli("plan")
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+        self.assertIn("- **Readiness:** READY", plan)
+        self.assertIn("No architecture reference filenames were supplied for this mission.", plan)
+
+    def test_plan_never_fabricates_engineering_requirements(self):
+        self.initialize_with_prompt("Build a command-line utility.")
+        self.run_cli("assess")
+        assessment_path = self.workspace / "assessment.json"
+        assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
+        assessment["readiness"] = "READY_WITH_RISK"
+        assessment_path.write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.run_cli("plan")
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+        self.assertIn("No explicit performance requirements were identified during assessment.", plan)
+        self.assertIn("No explicit observability requirements were identified during assessment.", plan)
+        self.assertNotIn("Kubernetes", plan)
+        self.assertNotIn("PostgreSQL", plan)
+        self.assertNotIn("OAuth", plan)
 
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

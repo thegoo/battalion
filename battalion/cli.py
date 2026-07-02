@@ -62,13 +62,17 @@ def plan(args, cwd):
         if not assessment_path.is_file():
             raise SystemExit("No mission assessment exists. Run battalion assess first.")
         assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
-        content = render_mission_plan(read_yaml(workspace / "mission.yaml"), ledger, assessment)
+        readiness = assessment.get("readiness")
+        if readiness not in {"READY", "READY_WITH_RISK"}:
+            raise SystemExit(f"Mission planning requires assessment readiness READY or READY_WITH_RISK. Current readiness: {readiness or 'UNKNOWN'}.")
+        content = render_mission_plan(read_yaml(workspace / "mission.yaml"), ledger, assessment, args.architecture or [])
         target = workspace / "mission-plan.md"
         target.write_text(content, encoding="utf-8")
         append_event(workspace, "mission_plan_created", {
             "path": str(target.relative_to(workspace.parent)),
             "assessment_schema_version": assessment.get("schema_version"),
             "readiness": assessment.get("readiness"),
+            "architecture_references": args.architecture or [],
         })
         print(f"Generated execution-ready mission plan at {target}")
         return
@@ -91,107 +95,326 @@ def plan(args, cwd):
     print(f"Added {req_id}: {statement}")
 
 
-def render_mission_plan(mission, ledger, assessment):
-    requirements = ledger.get("requirements", [])
+def render_mission_plan(mission, ledger, assessment, architecture_references=None):
+    architecture_references = architecture_references or []
+    requirements = [item for item in ledger.get("requirements", []) if isinstance(item, dict)]
+    constraints = ledger.get("constraints", {}) if isinstance(ledger.get("constraints"), dict) else {}
+    resolved_clarifications = [
+        item for item in ledger.get("clarifications", [])
+        if isinstance(item, dict) and item.get("status") in {"resolved", "superseded"}
+    ]
     lines = [
-        "# Battalion Mission Plan",
+        "# Mission",
         "",
-        "## Mission",
+        f"**Title:** {mission.get('title', '—')}",
         "",
-        f"- **Title:** {mission.get('title', '—')}",
-        f"- **Objective:** {mission.get('objective', '—')}",
+        "## Background",
         "",
-        "## Assessment Gate",
+        _mission_background(assessment, ledger),
+        "",
+        "## Mission Objective",
+        "",
+        mission.get("objective") or mission.get("mission_prompt") or "No mission objective was identified during assessment.",
+        "",
+        "## Business Outcome",
+        "",
+        "No explicit business outcome was identified during assessment.",
+        "",
+        "## Readiness Summary",
         "",
         f"- **Readiness:** {assessment.get('readiness', '—')}",
         f"- **Recommendation:** {assessment.get('recommendation', '—')}",
-        "",
-        "## Readiness Reasons",
-        "",
     ]
-    lines.extend(f"- {reason}" for reason in assessment.get("readiness_reason", []) or ["None recorded"])
-    lines.extend(["", "## Recommendation Rationale", ""])
-    lines.extend(f"- {reason}" for reason in assessment.get("recommendation_reason", []) or ["None recorded"])
-    lines.extend(["", "## Execution Requirements", ""])
-    for requirement in requirements:
-        if not isinstance(requirement, dict):
-            continue
-        lines.extend([
-            f"### {requirement.get('id', '—')} — {requirement.get('statement', '—')}",
-            "",
-            f"- **Owner:** {requirement.get('owner', '—')}",
-            f"- **Status:** {requirement.get('status', '—')}",
-            "- **Acceptance Criteria:**",
-        ])
-        lines.extend(f"  - {item}" for item in requirement.get("acceptance", []))
-        lines.append("- **Required Reviews:**")
-        for review in requirement.get("required_reviews", []):
-            if isinstance(review, dict):
-                lines.append(f"  - {review.get('reviewer', '—')} ({review.get('status', '—')})")
+    lines.extend(f"- {reason}" for reason in assessment.get("readiness_reason", []) or ["No readiness reasons were identified during assessment."])
+    lines.extend([
+        "",
+        "## Mission Classification",
+        "",
+    ])
+    lines.extend(_bullet(assessment.get("mission_attributes"), "No mission attributes were identified during assessment."))
+    lines.extend([
+        "",
+        "## Functional Requirements",
+        "",
+    ])
+    lines.extend(_requirement_lines(requirements, "functional"))
+    lines.extend([
+        "",
+        "## Non-Functional Requirements",
+        "",
+    ])
+    lines.extend(_non_functional_lines(requirements, constraints))
+    lines.extend([
+        "",
+        "## Engineering Constraints",
+        "",
+    ])
+    lines.extend(_constraint_lines(constraints, resolved_clarifications))
+    lines.extend([
+        "",
+        "## Architecture References",
+        "",
+    ])
+    if architecture_references:
+        lines.append("The following engineering references have been identified for this mission:")
         lines.append("")
-    lines.extend([
-        "## Clarifications",
-        "",
-    ])
-    clarifications = ledger.get("clarifications", [])
-    if clarifications:
-        lines.extend(
-            f"- {item.get('id', '—')} [{item.get('status', '—')}]: {item.get('question', '—')}"
-            for item in clarifications if isinstance(item, dict)
-        )
+        lines.extend(f"- {name}" for name in architecture_references)
+        lines.extend([
+            "",
+            "Implementation shall conform to these engineering references.",
+            "Planning did not inspect, validate, summarize, or interpret their contents.",
+        ])
     else:
-        lines.append("- None")
-    lines.extend(["", "## Constraints", ""])
-    constraints = ledger.get("constraints", {})
-    if isinstance(constraints, dict) and constraints:
-        for category, values in constraints.items():
-            if not values:
-                continue
-            lines.append(f"### {str(category).title()}")
-            for constraint in values:
-                if isinstance(constraint, dict):
-                    lines.append(f"- {constraint.get('id', '—')}: {constraint.get('statement', '—')}")
-            lines.append("")
-    else:
-        lines.append("- None")
-    lines.extend(["## Assumptions", ""])
-    assumptions = ledger.get("assumptions", [])
-    if assumptions:
-        for assumption in assumptions:
-            if isinstance(assumption, dict):
-                lines.append(f"- {assumption.get('id', '—')}: {assumption.get('statement', '—')}")
-            else:
-                lines.append(f"- {assumption}")
-    else:
-        lines.append("- None")
-    lines.extend(["", "## Risks", ""])
-    risks = ledger.get("risks", [])
-    if risks:
-        for risk in risks:
-            if isinstance(risk, dict):
-                lines.append(f"- {risk.get('id', '—')}: {risk.get('statement', '—')}")
-            else:
-                lines.append(f"- {risk}")
-    else:
-        lines.append("- None")
+        lines.append("No architecture reference filenames were supplied for this mission.")
     lines.extend([
         "",
-        "## Next Execution Steps",
+        "## Assumptions",
         "",
-        "1. Resolve open clarifications before implementation readiness is finalized.",
-        "2. Complete required planning, architecture, and security reviews.",
-        "3. Dispatch runtime assignments sequentially with `battalion dispatch`.",
-        "4. Attach evidence during execution and run Mission Assurance after implementation evidence exists.",
     ])
+    lines.extend(_contract_item_lines(ledger.get("assumptions"), "No assumptions were identified during assessment."))
     lines.extend([
         "",
-        "## Assessment Artifact",
-        "",
-        "- `.battalion/assessment.json`",
-        "- `.battalion/assessment.md`",
+        "## Risks",
         "",
     ])
-    return "\n".join(lines)
+    lines.extend(_risk_lines(assessment))
+    lines.extend([
+        "",
+        "## Implementation Guidance",
+        "",
+    ])
+    lines.extend(_implementation_guidance(requirements, constraints, architecture_references))
+    lines.extend([
+        "",
+        "## Suggested Work Breakdown",
+        "",
+    ])
+    lines.extend(_work_breakdown(requirements, constraints))
+    lines.extend([
+        "",
+        "## Testing Strategy",
+        "",
+    ])
+    lines.extend(_testing_strategy(requirements, constraints))
+    lines.extend([
+        "",
+        "## Evidence Required",
+        "",
+    ])
+    lines.extend(_evidence_required(requirements, constraints))
+    lines.extend([
+        "",
+        "## Definition of Done",
+        "",
+        "- Acceptance criteria for every requirement are satisfied.",
+        "- Required evidence has been produced and attached to the mission record.",
+        "- Engineering constraints identified during assessment are satisfied.",
+        "- Required architecture references have been reviewed when filenames were supplied.",
+        "- Required deliverables from the assessed mission are complete.",
+        "",
+        "## Out of Scope",
+        "",
+        "- Planning does not dispatch work.",
+        "- Planning does not execute work.",
+        "- Planning does not invoke AI.",
+        "- Planning does not inspect architecture documents.",
+        "- No additional out-of-scope items were identified during assessment.",
+        "",
+        "## Mission Success Criteria",
+        "",
+    ])
+    lines.extend(_success_criteria(requirements, constraints))
+    return "\n".join(lines) + "\n"
+
+
+def _mission_background(assessment, ledger):
+    summary = assessment.get("mission_summary")
+    if summary:
+        return summary
+    if ledger.get("mission_prompt"):
+        return "The assessed mission prompt defines the implementation scope. No additional background was identified during assessment."
+    return "No mission background was identified during assessment."
+
+
+def _bullet(values, empty):
+    values = values or []
+    return [f"- {value}" for value in values] if values else [f"- {empty}"]
+
+
+def _contract_item_lines(values, empty):
+    if not values:
+        return [f"- {empty}"]
+    result = []
+    for item in values:
+        if isinstance(item, dict):
+            result.append(f"- {item.get('id', '—')}: {item.get('statement', item)}")
+        else:
+            result.append(f"- {item}")
+    return result
+
+
+def _risk_lines(assessment):
+    values = []
+    values.extend(assessment.get("risks") or [])
+    values.extend(assessment.get("resolved_risks") or [])
+    if not values:
+        return ["- No risks were identified during assessment."]
+    result = []
+    for item in values:
+        if isinstance(item, dict):
+            status = item.get("status", "OPEN")
+            result.append(f"- {item.get('id', '—')} [{status}]: {item.get('statement', item)}")
+        else:
+            result.append(f"- {item}")
+    return result
+
+
+def _requirement_lines(requirements, mode):
+    selected = [
+        requirement for requirement in requirements
+        if mode != "functional" or not _is_non_functional_requirement(requirement)
+    ]
+    if not selected:
+        return ["- No functional requirements were identified during assessment."]
+    lines = []
+    for requirement in selected:
+        lines.append(f"### {requirement.get('id', '—')} — {requirement.get('statement', '—')}")
+        lines.append("")
+        acceptance = requirement.get("acceptance") or []
+        lines.append("Implementation must satisfy:")
+        lines.extend(f"- {item}" for item in acceptance) if acceptance else lines.append("- No acceptance criteria were identified during assessment.")
+        trace = requirement.get("traceability", {})
+        if trace.get("prompt_excerpt"):
+            lines.append(f"- Traceability: {trace.get('prompt_excerpt')}")
+        lines.append("")
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
+def _is_non_functional_requirement(requirement):
+    text = f"{requirement.get('statement', '')} {' '.join(requirement.get('acceptance', []) or [])}".lower()
+    return any(term in text for term in ("test", "documentation", "docker", "container", "security", "error handling", "operational", "startup"))
+
+
+def _non_functional_lines(requirements, constraints):
+    lines = []
+    supported = []
+    for requirement in requirements:
+        if _is_non_functional_requirement(requirement):
+            supported.append(requirement)
+    for requirement in supported:
+        lines.append(f"- {requirement.get('id', '—')}: {requirement.get('statement', '—')}")
+    quality_map = {
+        "Security": constraints.get("security", []),
+        "Operational readiness": constraints.get("operational", []),
+        "Testing": constraints.get("testing", []),
+        "Reliability": [],
+        "Observability": [],
+        "Maintainability": [],
+        "Performance": [],
+    }
+    for name, values in quality_map.items():
+        if values:
+            lines.append(f"- {name}: " + "; ".join(item.get("statement", "—") for item in values if isinstance(item, dict)))
+        else:
+            lines.append(f"- {name}: No explicit {name.lower()} requirements were identified during assessment.")
+    return lines
+
+
+def _constraint_lines(constraints, resolved_clarifications):
+    lines = []
+    for category in ("functional", "technical", "security", "testing", "operational"):
+        values = constraints.get(category, [])
+        if not values:
+            lines.append(f"- {category.title()}: No {category} constraints were identified during assessment.")
+            continue
+        lines.append(f"### {category.title()}")
+        for item in values:
+            if isinstance(item, dict):
+                lines.append(f"- {item.get('id', '—')}: {item.get('statement', '—')}")
+    if resolved_clarifications:
+        lines.append("### Resolved Clarifications")
+        for item in resolved_clarifications:
+            lines.append(f"- {item.get('id', '—')}: {item.get('question', '—')} — {item.get('answer', '—')}")
+    else:
+        lines.append("- Resolved Clarifications: No resolved clarifications were identified during assessment.")
+    return lines
+
+
+def _implementation_guidance(requirements, constraints, architecture_references):
+    if not requirements:
+        return ["No implementation guidance could be produced because no requirements were identified during assessment."]
+    lines = [
+        "Implement only the behavior, constraints, and validation obligations captured in the assessed mission contract.",
+        "Preserve the acceptance criteria and traceability recorded for each requirement.",
+    ]
+    if constraints.get("technical"):
+        lines.append("Use the technical constraints identified during assessment: " + "; ".join(item.get("statement", "—") for item in constraints["technical"] if isinstance(item, dict)))
+    else:
+        lines.append("No explicit technology constraints were identified during assessment.")
+    if architecture_references:
+        lines.append("Review and conform to the supplied architecture reference filenames before implementation.")
+    return [f"- {line}" for line in lines]
+
+
+def _work_breakdown(requirements, constraints):
+    phases = [
+        ("Phase 1 — Project initialization", "Establish the application structure required by the assessed mission."),
+        ("Phase 2 — Core implementation", "Implement the functional requirements and acceptance criteria."),
+    ]
+    if constraints.get("security"):
+        phases.append(("Phase 3 — Security controls", "Implement the security constraints identified during assessment."))
+    if constraints.get("operational"):
+        phases.append(("Phase 4 — Operational readiness", "Implement deployment, startup, and operational expectations identified during assessment."))
+    if constraints.get("testing") or requirements:
+        phases.append(("Phase 5 — Validation", "Run tests and validate acceptance criteria against produced evidence."))
+    lines = []
+    for title, description in phases:
+        lines.extend([f"### {title}", "", description, ""])
+    return lines[:-1]
+
+
+def _testing_strategy(requirements, constraints):
+    lines = []
+    testing = constraints.get("testing", [])
+    if testing:
+        lines.extend(f"- {item.get('statement', '—')}" for item in testing if isinstance(item, dict))
+    else:
+        lines.append("- No explicit testing constraints were identified during assessment.")
+    acceptance_count = sum(1 for requirement in requirements if requirement.get("acceptance"))
+    if acceptance_count:
+        lines.append("- Validate every requirement acceptance criterion.")
+    if constraints.get("security"):
+        lines.append("- Validate security behavior identified during assessment.")
+    if constraints.get("operational"):
+        lines.append("- Validate operational behavior identified during assessment.")
+    return lines
+
+
+def _evidence_required(requirements, constraints):
+    lines = ["- Evidence that every acceptance criterion has been satisfied."]
+    if constraints.get("testing"):
+        lines.append("- Passing automated test output.")
+    if constraints.get("technical"):
+        lines.append("- Successful build or execution evidence for the specified technology stack.")
+    if constraints.get("operational"):
+        lines.append("- Operational validation evidence for startup, runtime, or deployment expectations.")
+    if any("docker" in item.get("statement", "").lower() or "container" in item.get("statement", "").lower() for item in constraints.get("technical", []) + constraints.get("operational", []) if isinstance(item, dict)):
+        lines.append("- Container build and run evidence.")
+    lines.append("- Review evidence for required reviews recorded on mission requirements.")
+    return lines
+
+
+def _success_criteria(requirements, constraints):
+    if not requirements:
+        return ["- No mission success criteria could be derived because no requirements were identified during assessment."]
+    lines = [
+        "- The implementation satisfies the assessed mission requirements and acceptance criteria.",
+        "- The solution produces the functional outcomes identified during assessment.",
+        "- Validation evidence demonstrates that the implementation meets the mission contract.",
+    ]
+    if constraints.get("operational"):
+        lines.append("- Operational expectations identified during assessment are demonstrated.")
+    return lines
 
 
 def _clarification_action(value, status):
@@ -587,12 +810,13 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.3.6 configurable mission classification")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.4.0 deterministic mission assessment and planning")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
     p.add_argument("--acceptance", action="append", help="Acceptance criterion; repeat for multiple criteria")
     p.add_argument("--review", action="append", help="Required standing-team reviewer id; repeat for multiple reviews")
+    p.add_argument("--architecture", action="append", help="Architecture reference filename to record in the mission plan; repeat for multiple references")
     p = commands.add_parser("clarify")
     p.add_argument("--resolver", help="Human responsible for the clarification decision")
     p.add_argument("--answer", action="append", metavar="Q-ID=VALUE", help="Resolve a clarification; repeat as needed")

@@ -1,4 +1,4 @@
-# Battalion v0.3.6 — Configurable Mission Classification Spine
+# Battalion v0.4.0 — Planning Engine MVP
 
 Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
@@ -306,7 +306,11 @@ This design intentionally prevents Battalion from becoming a dependency resolver
 battalion plan
 ```
 
-`plan` consumes `.battalion/assessment.json` and the assessed mission contract. It turns assessment output into `.battalion/mission-plan.md`, an execution-ready markdown plan containing the mission, readiness, recommendation rationale, requirements, acceptance criteria, required reviews, clarifications, assumptions, risks, constraints, and next execution steps.
+Planning transforms an assessed engineering mission into an implementation-ready engineering specification. It consumes the mission, assessment, assumptions, risks, resolved clarifications, and optional architecture reference filenames, then writes:
+
+```text
+.battalion/mission-plan.md
+```
 
 Planning depends on assessment. If no assessment exists, Battalion exits cleanly with:
 
@@ -314,7 +318,24 @@ Planning depends on assessment. If no assessment exists, Battalion exits cleanly
 No mission assessment exists. Run battalion assess first.
 ```
 
-`plan` does not regenerate unrelated or contradictory requirements. Manual requirement entry remains available through `battalion plan --requirement ...` for compatibility and direct contract editing, but the primary documented workflow is `init → assess → plan`.
+Planning only executes when assessment readiness is `READY` or `READY_WITH_RISK`. `NOT_READY` and `PARTIALLY_READY` missions must be clarified or refined before planning.
+
+Architecture references may be recorded explicitly:
+
+```bash
+battalion plan \
+  --architecture entra-sso.md \
+  --architecture api-security.md \
+  --architecture eventing.md
+```
+
+Planning records supplied filenames as engineering references. It does not discover repository documentation, inspect architecture files, parse architecture files, summarize architecture files, or infer architectural intent from them.
+
+The generated plan includes mission background, objective, business outcome, readiness summary, mission classification, functional requirements, non-functional requirements, engineering constraints, architecture references, assumptions, risks, implementation guidance, suggested work breakdown, testing strategy, evidence required, definition of done, out of scope, and mission success criteria.
+
+Planning does not dispatch work, execute work, invoke AI, inspect architecture documents, or invent missing requirements. If information was not identified during assessment, the plan states that explicitly.
+
+Manual requirement entry remains available through `battalion plan --requirement ...` for compatibility and direct contract editing, but the primary documented workflow is `init → assess → plan`.
 
 ## Dispatcher runtime
 
@@ -404,7 +425,7 @@ battalion status
 
 `status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
 
-For v0.3.6, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
+For v0.4.0, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
 
 ```bash
 battalion assess
@@ -473,7 +494,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.3.6. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.4.0. Battalion does not execute the reviewers.
 
 ## Audit validation
 

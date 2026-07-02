@@ -1,3 +1,3 @@
-"""Battalion v0.3.6 configurable mission classification spine."""
+"""Battalion v0.4.0 deterministic mission assessment and planning."""
 
-__version__ = "0.3.6"
+__version__ = "0.4.0"
