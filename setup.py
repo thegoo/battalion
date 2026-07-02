@@ -9,6 +9,6 @@ setup(
     description="Configurable deterministic mission classification and assessment",
     python_requires=">=3.9",
     packages=find_packages(include=("battalion", "battalion.*")),
-    package_data={"battalion": ["default_attributes.yaml"]},
+    package_data={"battalion": ["attributes.yml"]},
     entry_points={"console_scripts": ["battalion=battalion.cli:main"]},
 )

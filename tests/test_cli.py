@@ -80,11 +80,11 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_init_creates_workspace_and_original_prompt(self):
         self.initialize()
-        for name in ("mission.yaml", "agents.yaml", "attributes.yaml", "ledger.yaml", "events.jsonl", "reports"):
+        for name in ("mission.yaml", "agents.yaml", "attributes.yml", "ledger.yaml", "events.jsonl", "reports"):
             self.assertTrue((self.workspace / name).exists())
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["original_prompt"], "Build JWT authentication.")
         self.assertEqual(len(read_yaml(self.workspace / "agents.yaml")["agents"]), 9)
-        catalog = read_yaml(self.workspace / "attributes.yaml")
+        catalog = AttributeCatalogLoader(self.workspace / "attributes.yml").load()
         self.assertEqual(catalog["schema_version"], ATTRIBUTE_SCHEMA_VERSION)
         identifiers = [item["identifier"] for item in catalog["attributes"]]
         for identifier in ("REST_API", "HTTP_ENDPOINT", "USER_INTERFACE", "DATABASE", "SECURITY", "TESTING_REQUIRED", "NODE", "TYPESCRIPT", "DOTNET", "DOCKER"):
@@ -223,14 +223,14 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_attribute_catalog_loader_rejects_invalid_schema_version(self):
         self.initialize_with_prompt("Build a REST API.")
-        write_yaml(self.workspace / "attributes.yaml", {"schema_version": "wrong", "attributes": {}})
+        write_yaml(self.workspace / "attributes.yml", {"schema_version": "wrong", "attributes": {}})
         with self.assertRaises(SystemExit) as raised:
             main(["assess"], self.cwd)
         self.assertIn("unsupported attribute catalog schema_version", str(raised.exception))
 
     def test_mission_classifier_loads_attributes_from_yaml(self):
         self.initialize_with_prompt("Use acme runtime.")
-        write_yaml(self.workspace / "attributes.yaml", {
+        write_yaml(self.workspace / "attributes.yml", {
             "schema_version": ATTRIBUTE_SCHEMA_VERSION,
             "attributes": {
                 "ACME_RUNTIME": {
@@ -240,7 +240,7 @@ class BattalionCliTests(unittest.TestCase):
                 }
             },
         })
-        catalog = AttributeCatalogLoader(self.workspace / "attributes.yaml").load()
+        catalog = AttributeCatalogLoader(self.workspace / "attributes.yml").load()
         result = MissionClassifier(catalog).classify(
             {"mission_prompt": "Use acme runtime."},
             {"requirements": [], "clarifications": []},

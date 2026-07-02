@@ -46,7 +46,7 @@ def init(args, cwd):
     workspace.mkdir(); (workspace / "reports").mkdir()
     write_yaml(workspace / "mission.yaml", {"id": "M-001", "title": title, "objective": objective, "mission_prompt": mission_prompt, "original_prompt": mission_prompt, "status": "initialized", "created_at": timestamp(), "doctrine": DOCTRINE})
     write_yaml(workspace / "agents.yaml", standing_team())
-    write_default_attribute_catalog(workspace / "attributes.yaml")
+    write_default_attribute_catalog(workspace / "attributes.yml")
     write_yaml(workspace / "ledger.yaml", {"mission_id": "M-001", "mission_prompt": mission_prompt, "requirements": [], "assumptions": [], "risks": []})
     (workspace / "events.jsonl").touch()
     append_event(workspace, "mission_initialized", {"mission_id": "M-001"})

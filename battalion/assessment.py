@@ -280,7 +280,10 @@ def _attribute_sources_from_classification(classification: Dict[str, Any]) -> Di
 
 
 def _attribute_catalog(workspace: Path) -> Dict[str, Any]:
-    path = workspace / "attributes.yaml"
+    path = workspace / "attributes.yml"
+    legacy_path = workspace / "attributes.yaml"
+    if not path.is_file() and legacy_path.is_file():
+        path = legacy_path
     if not path.is_file():
         return default_attribute_catalog()
     return AttributeCatalogLoader(path).load()

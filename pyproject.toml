@@ -17,4 +17,4 @@ battalion = "battalion.cli:main"
 include = ["battalion*"]
 
 [tool.setuptools.package-data]
-battalion = ["default_attributes.yaml"]
+battalion = ["attributes.yml"]

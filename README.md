@@ -52,7 +52,7 @@ battalion report
 
 Every command locates `.battalion` relative to the current working directory. The repository root, manual imports, custom aliases, and `PYTHONPATH` are not required.
 
-`init` captures the mission title, objective, and prompt, then creates `.battalion/mission.yaml`, `agents.yaml`, `attributes.yaml`, `ledger.yaml`, `events.jsonl`, and `reports/`. It does not require requirements yet. The prompt is stored as `mission_prompt` in both the mission record and initial ledger and is the authoritative source of mission intent. For non-interactive use:
+`init` captures the mission title, objective, and prompt, then creates `.battalion/mission.yaml`, `agents.yaml`, `attributes.yml`, `ledger.yaml`, `events.jsonl`, and `reports/`. It does not require requirements yet. The prompt is stored as `mission_prompt` in both the mission record and initial ledger and is the authoritative source of mission intent. For non-interactive use:
 
 ```bash
 battalion init \
@@ -244,7 +244,7 @@ Assessment Engine
 
 The classifier determines engineering attributes only. It does not contain readiness rules, recommendation logic, engineering obligations, or assurance logic.
 
-The attribute catalog lives at `.battalion/attributes.yaml`. The file is JSON-formatted YAML and can be extended by a project or enterprise without changing Battalion code. Each attribute contains:
+The attribute catalog lives at `.battalion/attributes.yml`. The file is plain YAML and can be extended by a project or enterprise without changing Battalion code. Each attribute contains:
 
 - `schema_version: battalion.attributes.v1`
 - `attributes`
