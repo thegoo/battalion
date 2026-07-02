@@ -18,3 +18,7 @@ include = ["battalion*"]
 
 [tool.setuptools.package-data]
 battalion = ["attributes.yml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
