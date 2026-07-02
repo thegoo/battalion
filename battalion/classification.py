@@ -1,150 +1,52 @@
-"""Deterministic mission classification from configurable attribute catalogs."""
+"""Deterministic mission classification from external attribute catalogs."""
 
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
+from .storage import read_yaml, write_yaml
 
-DEFAULT_ATTRIBUTE_CATALOG = {
-    "attributes": [
-        {
-            "identifier": "REST_API",
-            "description": "Mission exposes HTTP API endpoints.",
-            "indicators": ["api", "rest", "endpoint", "http", "https", "openapi", "swagger", "route", "status code", "json"],
-            "minimum_threshold": 2,
-        },
-        {
-            "identifier": "HTTP_ENDPOINT",
-            "description": "Mission defines HTTP endpoint behavior.",
-            "indicators": ["endpoint", "route", "http", "https", "get", "post", "put", "patch", "delete", "status code", "http 200"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "USER_INTERFACE",
-            "description": "Mission includes user interface work.",
-            "indicators": ["react", "angular", "vue", "html", "css", "button", "page", "form", "screen", "frontend", "ui", "user interface"],
-            "minimum_threshold": 2,
-        },
-        {
-            "identifier": "DATABASE",
-            "description": "Mission includes database or persistence work.",
-            "indicators": ["database", "sql", "migration", "schema", "table", "index", "constraint", "postgres", "mysql", "sqlite", "redis"],
-            "minimum_threshold": 2,
-        },
-        {
-            "identifier": "SECURITY",
-            "description": "Mission includes security-sensitive work.",
-            "indicators": ["authentication", "authorization", "jwt", "oidc", "oauth", "owasp", "secrets", "encryption", "security"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "TESTING_REQUIRED",
-            "description": "Mission explicitly requires testing.",
-            "indicators": ["test", "tests", "testing", "automated tests", "test suite", "happy-path", "negative-path"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "NODE",
-            "description": "Mission uses Node.js technology.",
-            "indicators": ["node", "nodejs", "node.js", "express", "fastify", "npm"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "TYPESCRIPT",
-            "description": "Mission uses TypeScript.",
-            "indicators": ["typescript", "tsconfig"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "DOTNET",
-            "description": "Mission uses .NET technology.",
-            "indicators": [".net", "asp.net", "minimal api", "c#", "entity framework", "dotnet"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "DOCKER",
-            "description": "Mission uses Docker or container packaging.",
-            "indicators": ["docker", "dockerfile", "container", "containerized", "containerised"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "PUBLIC_ENDPOINT",
-            "description": "Mission exposes a public endpoint.",
-            "indicators": ["public endpoint", "public api"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "PUBLIC_API",
-            "description": "Mission exposes a public API.",
-            "indicators": ["public api"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "GET_ONLY",
-            "description": "Mission restricts HTTP behavior to GET requests.",
-            "indicators": ["get-only", "get only", "allow get requests only", "only get", "get requests only"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "SECURE_ERROR_HANDLING",
-            "description": "Mission includes secure error handling or information disclosure constraints.",
-            "indicators": ["owasp", "secure error", "malformed", "stack traces", "information disclosure", "do not expose"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "MALICIOUS_TESTING",
-            "description": "Mission requires malicious-request validation.",
-            "indicators": ["malicious-request", "malicious request", "abuse case"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "AUTHENTICATION",
-            "description": "Mission includes authentication or identity work.",
-            "indicators": ["authentication", "authorization", "jwt", "login", "token", "identity", "oidc", "oauth"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "CLI",
-            "description": "Mission includes command-line interaction.",
-            "indicators": ["cli", "command-line", "command line"],
-            "minimum_threshold": 1,
-        },
-        {
-            "identifier": "BACKGROUND_PROCESS",
-            "description": "Mission includes background processing.",
-            "indicators": ["worker", "background", "daemon", "queue"],
-            "minimum_threshold": 1,
-        },
-    ]
-}
+
+ATTRIBUTE_SCHEMA_VERSION = "battalion.attributes.v1"
+DEFAULT_CATALOG_PATH = Path(__file__).with_name("default_attributes.yaml")
+
+
+class AttributeCatalogLoader:
+    """Load and validate mission classification attribute catalogs."""
+
+    def __init__(self, path: Path = None):
+        self.path = Path(path) if path is not None else DEFAULT_CATALOG_PATH
+
+    def load(self) -> Dict[str, Any]:
+        catalog = read_yaml(self.path)
+        return normalize_attribute_catalog(catalog)
 
 
 class MissionClassifier:
     """Classify engineering attributes without applying readiness rules."""
 
     def __init__(self, catalog: Dict[str, Any]):
-        self.catalog = catalog
+        self.catalog = normalize_attribute_catalog(catalog)
 
     def classify(self, mission: Dict[str, Any], ledger: Dict[str, Any]) -> Dict[str, Any]:
-        sources = self._contract_sources(mission, ledger)
+        corpus = MissionCorpus.from_mission_contract(mission, ledger)
         attributes = []
-        for attribute in self._attributes():
-            identifier = str(attribute.get("identifier", "")).strip()
-            if not identifier:
-                continue
-            indicators = [str(value).strip() for value in attribute.get("indicators", []) if str(value).strip()]
-            threshold = int(attribute.get("minimum_threshold", 1) or 1)
-            evidence = _classification_evidence(sources, indicators)
+        for attribute in self.catalog["attributes"]:
+            indicators = attribute["indicators"]
+            threshold = attribute["threshold"]
+            evidence = _classification_evidence(corpus.sources, indicators)
             matched = sorted({item["indicator"] for item in evidence}, key=lambda value: indicators.index(value))
             hit_count = len(matched)
             classified = hit_count >= threshold
             attributes.append({
-                "attribute": identifier,
-                "description": attribute.get("description", ""),
-                "classification_evidence": evidence,
-                "hit_count": hit_count,
+                "attribute": attribute["identifier"],
+                "description": attribute["description"],
                 "threshold": threshold,
+                "matched_indicators": matched,
+                "hit_count": hit_count,
                 "classified": classified,
                 "decision": "classified" if classified else "not_classified",
+                "classification_evidence": evidence,
                 "evidence": {
                     "classification_evidence": evidence,
                     "hit_count": hit_count,
@@ -154,15 +56,20 @@ class MissionClassifier:
             })
         detected = [item["attribute"] for item in attributes if item["classified"]]
         return {
+            "schema_version": self.catalog["schema_version"],
             "detected_attributes": detected,
             "attributes": attributes,
         }
 
-    def _attributes(self) -> List[Dict[str, Any]]:
-        values = self.catalog.get("attributes", [])
-        return values if isinstance(values, list) else []
 
-    def _contract_sources(self, mission: Dict[str, Any], ledger: Dict[str, Any]) -> List[Dict[str, str]]:
+class MissionCorpus:
+    """Structured text sources used by MissionClassifier."""
+
+    def __init__(self, sources: List[Dict[str, str]]):
+        self.sources = sources
+
+    @classmethod
+    def from_mission_contract(cls, mission: Dict[str, Any], ledger: Dict[str, Any]) -> "MissionCorpus":
         sources = []
         _add_source(sources, "mission_prompt", mission.get("mission_prompt") or mission.get("original_prompt") or ledger.get("mission_prompt"))
         _add_source(sources, "mission_objective", mission.get("objective"))
@@ -175,21 +82,66 @@ class MissionClassifier:
             if not isinstance(clarification, dict) or clarification.get("status") not in {"resolved", "superseded", "rejected"}:
                 continue
             _add_source(sources, "clarification_answer", clarification.get("answer"))
-        return sources
+        return cls(sources)
 
 
 def default_attribute_catalog() -> Dict[str, Any]:
-    return {
-        "attributes": [
-            {
-                "identifier": item["identifier"],
-                "description": item["description"],
-                "indicators": list(item["indicators"]),
-                "minimum_threshold": item["minimum_threshold"],
-            }
-            for item in DEFAULT_ATTRIBUTE_CATALOG["attributes"]
+    return AttributeCatalogLoader(DEFAULT_CATALOG_PATH).load()
+
+
+def write_default_attribute_catalog(path: Path) -> None:
+    write_yaml(path, default_attribute_catalog())
+
+
+def normalize_attribute_catalog(catalog: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(catalog, dict):
+        raise ValueError("attribute catalog must be an object")
+    schema_version = catalog.get("schema_version")
+    if schema_version != ATTRIBUTE_SCHEMA_VERSION:
+        raise ValueError(f"unsupported attribute catalog schema_version: {schema_version!r}")
+    raw_attributes = catalog.get("attributes")
+    if isinstance(raw_attributes, dict):
+        items = [
+            {"identifier": identifier, **definition}
+            for identifier, definition in raw_attributes.items()
+            if isinstance(definition, dict)
         ]
-    }
+    elif isinstance(raw_attributes, list):
+        items = raw_attributes
+    else:
+        raise ValueError("attribute catalog must contain an attributes mapping or list")
+
+    attributes = []
+    seen = set()
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"attribute catalog entry {index} must be an object")
+        identifier = str(item.get("identifier", "")).strip()
+        if not identifier:
+            raise ValueError(f"attribute catalog entry {index} is missing identifier")
+        if identifier in seen:
+            raise ValueError(f"attribute catalog contains duplicate identifier: {identifier}")
+        seen.add(identifier)
+        description = str(item.get("description", "")).strip()
+        if not description:
+            raise ValueError(f"attribute {identifier} is missing description")
+        indicators = [str(value).strip() for value in item.get("indicators", []) if str(value).strip()]
+        if not indicators:
+            raise ValueError(f"attribute {identifier} must define at least one indicator")
+        threshold = item.get("threshold")
+        try:
+            threshold = int(threshold)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"attribute {identifier} threshold must be an integer") from exc
+        if threshold < 1:
+            raise ValueError(f"attribute {identifier} threshold must be at least 1")
+        attributes.append({
+            "identifier": identifier,
+            "description": description,
+            "indicators": indicators,
+            "threshold": threshold,
+        })
+    return {"schema_version": ATTRIBUTE_SCHEMA_VERSION, "attributes": attributes}
 
 
 def _add_source(sources: List[Dict[str, str]], label: str, value: Any) -> None:

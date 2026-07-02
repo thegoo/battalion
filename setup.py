@@ -5,9 +5,10 @@ from setuptools import find_packages, setup
 
 setup(
     name="battalion-cli",
-    version="0.3.5",
-    description="Deterministic mission classification evidence and assessment",
+    version="0.3.6",
+    description="Configurable deterministic mission classification and assessment",
     python_requires=">=3.9",
     packages=find_packages(include=("battalion", "battalion.*")),
+    package_data={"battalion": ["default_attributes.yaml"]},
     entry_points={"console_scripts": ["battalion=battalion.cli:main"]},
 )

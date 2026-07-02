@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from battalion.assurance import assure
-from battalion.classification import MissionClassifier, default_attribute_catalog
+from battalion.classification import ATTRIBUTE_SCHEMA_VERSION, AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
 from battalion.cli import main
 from battalion.dispatcher import load_assignments
 from battalion.mission_analyst import generate_mission_contract
@@ -85,6 +85,7 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["original_prompt"], "Build JWT authentication.")
         self.assertEqual(len(read_yaml(self.workspace / "agents.yaml")["agents"]), 9)
         catalog = read_yaml(self.workspace / "attributes.yaml")
+        self.assertEqual(catalog["schema_version"], ATTRIBUTE_SCHEMA_VERSION)
         identifiers = [item["identifier"] for item in catalog["attributes"]]
         for identifier in ("REST_API", "HTTP_ENDPOINT", "USER_INTERFACE", "DATABASE", "SECURITY", "TESTING_REQUIRED", "NODE", "TYPESCRIPT", "DOTNET", "DOCKER"):
             self.assertIn(identifier, identifiers)
@@ -101,7 +102,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.3.5", output.getvalue())
+        self.assertIn("Battalion v0.3.6", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -198,25 +199,53 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_classifier_uses_configurable_catalog_thresholds(self):
         result = MissionClassifier({
+            "schema_version": ATTRIBUTE_SCHEMA_VERSION,
             "attributes": [{
                 "identifier": "CUSTOM_RUNTIME",
                 "description": "Custom runtime marker",
                 "indicators": ["alpha", "beta"],
-                "minimum_threshold": 2,
+                "threshold": 2,
             }]
         }).classify({"mission_prompt": "Use alpha only."}, {"requirements": [], "clarifications": []})
         custom = result["attributes"][0]
         self.assertFalse(custom["classified"])
         self.assertEqual(custom["hit_count"], 1)
         result = MissionClassifier({
+            "schema_version": ATTRIBUTE_SCHEMA_VERSION,
             "attributes": [{
                 "identifier": "CUSTOM_RUNTIME",
                 "description": "Custom runtime marker",
                 "indicators": ["alpha", "beta"],
-                "minimum_threshold": 2,
+                "threshold": 2,
             }]
         }).classify({"mission_prompt": "Use alpha and beta."}, {"requirements": [], "clarifications": []})
         self.assertTrue(result["attributes"][0]["classified"])
+
+    def test_attribute_catalog_loader_rejects_invalid_schema_version(self):
+        self.initialize_with_prompt("Build a REST API.")
+        write_yaml(self.workspace / "attributes.yaml", {"schema_version": "wrong", "attributes": {}})
+        with self.assertRaises(SystemExit) as raised:
+            main(["assess"], self.cwd)
+        self.assertIn("unsupported attribute catalog schema_version", str(raised.exception))
+
+    def test_mission_classifier_loads_attributes_from_yaml(self):
+        self.initialize_with_prompt("Use acme runtime.")
+        write_yaml(self.workspace / "attributes.yaml", {
+            "schema_version": ATTRIBUTE_SCHEMA_VERSION,
+            "attributes": {
+                "ACME_RUNTIME": {
+                    "description": "Custom ACME runtime.",
+                    "threshold": 1,
+                    "indicators": ["acme"],
+                }
+            },
+        })
+        catalog = AttributeCatalogLoader(self.workspace / "attributes.yaml").load()
+        result = MissionClassifier(catalog).classify(
+            {"mission_prompt": "Use acme runtime."},
+            {"requirements": [], "clarifications": []},
+        )
+        self.assertEqual(result["detected_attributes"], ["ACME_RUNTIME"])
 
     def test_classifier_is_deterministic(self):
         mission = {"mission_prompt": "Build a REST API over HTTP with OpenAPI docs."}
@@ -708,6 +737,7 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Readiness: NOT_READY", output)
         self.assertIn("Mission Classification", output)
         self.assertIn("REST_API: classified", output)
+        self.assertIn("DATABASE: not_classified", output)
         self.assertIn("hit count", output)
         self.assertIn("Primary Findings", output)
         self.assertIn("Outstanding Clarifications", output)
@@ -727,10 +757,8 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("DOCKER", assessment["mission_attributes"])
         self.assertIn("NODE", assessment["mission_attributes"])
         self.assertIn("TYPESCRIPT", assessment["mission_attributes"])
-        self.assertIn("GET_ONLY", assessment["mission_attributes"])
-        self.assertIn("SECURE_ERROR_HANDLING", assessment["mission_attributes"])
         self.assertIn("TESTING_REQUIRED", assessment["mission_attributes"])
-        self.assertIn("MALICIOUS_TESTING", assessment["mission_attributes"])
+        self.assertIn("SECURITY", assessment["mission_attributes"])
         self.assertIn("attribute_sources", assessment)
         self.assertIn("mission_classification", assessment)
         rest = next(item for item in assessment["mission_classification"]["attributes"] if item["attribute"] == "REST_API")
@@ -754,6 +782,8 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("hit count:", markdown)
         self.assertIn("evidence:", markdown)
         self.assertIn("from mission_prompt", markdown)
+        self.assertIn("DATABASE", markdown)
+        self.assertIn("classified: no", markdown)
 
     def test_assessment_is_deterministic_for_unchanged_mission(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

@@ -1,3 +1,3 @@
-"""Battalion v0.3.5 classification evidence refinement."""
+"""Battalion v0.3.6 configurable mission classification spine."""
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"

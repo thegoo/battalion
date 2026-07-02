@@ -6,7 +6,7 @@ from pathlib import Path
 from .agents import standing_team
 from .assessment import infer_attributes, write_assessment
 from .assurance import assure
-from .classification import default_attribute_catalog
+from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .reporting import render_report
@@ -46,7 +46,7 @@ def init(args, cwd):
     workspace.mkdir(); (workspace / "reports").mkdir()
     write_yaml(workspace / "mission.yaml", {"id": "M-001", "title": title, "objective": objective, "mission_prompt": mission_prompt, "original_prompt": mission_prompt, "status": "initialized", "created_at": timestamp(), "doctrine": DOCTRINE})
     write_yaml(workspace / "agents.yaml", standing_team())
-    write_yaml(workspace / "attributes.yaml", default_attribute_catalog())
+    write_default_attribute_catalog(workspace / "attributes.yaml")
     write_yaml(workspace / "ledger.yaml", {"mission_id": "M-001", "mission_prompt": mission_prompt, "requirements": [], "assumptions": [], "risks": []})
     (workspace / "events.jsonl").touch()
     append_event(workspace, "mission_initialized", {"mission_id": "M-001"})
@@ -446,19 +446,15 @@ def assessment(args, cwd):
 def print_assessment_summary(result):
     print(f"Readiness: {result['readiness']}")
     print("\nMission Classification")
-    classified = False
-    for item in result.get("mission_classification", {}).get("attributes", []):
-        decision = item.get("decision", "not_classified")
-        if decision != "classified":
-            continue
-        classified = True
+    attributes = result.get("mission_classification", {}).get("attributes", [])
+    if not attributes:
+        print("- None")
+    for item in attributes:
         evidence = ", ".join(
             f"{entry.get('indicator', '—')} from {entry.get('source', '—')}"
             for entry in item.get("classification_evidence", [])
         ) or "None"
-        print(f"- {item.get('attribute', '—')}: {decision}; evidence [{evidence}]; hit count {item.get('hit_count', 0)}; threshold {item.get('threshold', 1)}")
-    if not classified:
-        print("- None")
+        print(f"- {item.get('attribute', '—')}: {item.get('decision', 'not_classified')}; evidence [{evidence}]; hit count {item.get('hit_count', 0)}; threshold {item.get('threshold', 1)}")
     print("\nPrimary Findings")
     for finding in primary_assessment_findings(result):
         print(f"- {finding}")
@@ -590,7 +586,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.3.5 classification evidence refinement")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.3.6 configurable mission classification")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")

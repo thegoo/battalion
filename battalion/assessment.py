@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .classification import MissionClassifier, default_attribute_catalog
+from .classification import AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
 from .storage import read_yaml
 
 
@@ -283,12 +283,7 @@ def _attribute_catalog(workspace: Path) -> Dict[str, Any]:
     path = workspace / "attributes.yaml"
     if not path.is_file():
         return default_attribute_catalog()
-    catalog = read_yaml(path)
-    if not isinstance(catalog, dict):
-        raise ValueError("attribute catalog must be an object")
-    if not isinstance(catalog.get("attributes"), list):
-        raise ValueError("attribute catalog must contain an attributes list")
-    return catalog
+    return AttributeCatalogLoader(path).load()
 
 
 def _open_clarifications(ledger: Dict[str, Any]) -> List[Dict[str, Any]]:

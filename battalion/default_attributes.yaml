@@ -1,0 +1,55 @@
+{
+  "schema_version": "battalion.attributes.v1",
+  "attributes": {
+    "REST_API": {
+      "description": "Mission exposes HTTP API behavior.",
+      "threshold": 2,
+      "indicators": ["api", "rest", "http", "https", "endpoint", "route", "openapi", "swagger", "status code", "json"]
+    },
+    "HTTP_ENDPOINT": {
+      "description": "Mission defines HTTP endpoint behavior.",
+      "threshold": 1,
+      "indicators": ["endpoint", "route", "http", "https", "get", "post", "put", "patch", "delete", "status code", "http 200"]
+    },
+    "USER_INTERFACE": {
+      "description": "Mission includes user interface work.",
+      "threshold": 2,
+      "indicators": ["react", "angular", "vue", "html", "css", "button", "page", "form", "screen", "frontend", "ui", "user interface"]
+    },
+    "DATABASE": {
+      "description": "Mission includes database or persistence work.",
+      "threshold": 2,
+      "indicators": ["database", "sql", "migration", "schema", "table", "index", "constraint", "postgres", "mysql", "sqlite", "redis"]
+    },
+    "SECURITY": {
+      "description": "Mission includes security-sensitive work.",
+      "threshold": 1,
+      "indicators": ["authentication", "authorization", "jwt", "oidc", "oauth", "owasp", "secrets", "encryption", "security"]
+    },
+    "TESTING_REQUIRED": {
+      "description": "Mission explicitly requires testing.",
+      "threshold": 1,
+      "indicators": ["test", "tests", "testing", "automated tests", "test suite", "happy-path", "negative-path"]
+    },
+    "NODE": {
+      "description": "Mission uses Node.js technology.",
+      "threshold": 1,
+      "indicators": ["node", "nodejs", "node.js", "express", "fastify", "npm"]
+    },
+    "TYPESCRIPT": {
+      "description": "Mission uses TypeScript.",
+      "threshold": 1,
+      "indicators": ["typescript", "tsconfig"]
+    },
+    "DOTNET": {
+      "description": "Mission uses .NET technology.",
+      "threshold": 1,
+      "indicators": [".net", "asp.net", "minimal api", "c#", "entity framework", "dotnet"]
+    },
+    "DOCKER": {
+      "description": "Mission uses Docker or container packaging.",
+      "threshold": 1,
+      "indicators": ["docker", "dockerfile", "container", "containerized", "containerised"]
+    }
+  }
+}

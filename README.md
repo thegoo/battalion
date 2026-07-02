@@ -1,4 +1,4 @@
-# Battalion v0.3.5 — Classification Evidence Refinement
+# Battalion v0.3.6 — Configurable Mission Classification Spine
 
 Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
@@ -246,16 +246,21 @@ The classifier determines engineering attributes only. It does not contain readi
 
 The attribute catalog lives at `.battalion/attributes.yaml`. The file is JSON-formatted YAML and can be extended by a project or enterprise without changing Battalion code. Each attribute contains:
 
-- `identifier`
+- `schema_version: battalion.attributes.v1`
+- `attributes`
+- attribute `identifier`
 - `description`
 - `indicators`
-- `minimum_threshold`
+- `threshold`
 
-Seeded attributes include `REST_API`, `HTTP_ENDPOINT`, `USER_INTERFACE`, `DATABASE`, `SECURITY`, `TESTING_REQUIRED`, `NODE`, `TYPESCRIPT`, `DOTNET`, and `DOCKER`, plus compatibility attributes used by existing obligation applicability such as `GET_ONLY`, `SECURE_ERROR_HANDLING`, `MALICIOUS_TESTING`, and `AUTHENTICATION`.
+Seeded MVP attributes are `REST_API`, `HTTP_ENDPOINT`, `USER_INTERFACE`, `DATABASE`, `SECURITY`, `TESTING_REQUIRED`, `NODE`, `TYPESCRIPT`, `DOTNET`, and `DOCKER`.
+
+Projects may extend mission attributes, indicator vocabulary, and thresholds. Readiness rules, recommendation rules, and engineering obligations remain owned by Battalion and are not project-customizable in the MVP.
 
 For each catalog attribute, Mission Classification records:
 
 - detected attribute identifier;
+- matched indicators;
 - classification evidence with indicator and source;
 - hit count;
 - threshold;
@@ -266,6 +271,7 @@ Example assessment output:
 ```text
 Mission Classification
 - REST_API: classified; evidence [api from mission_prompt, rest from mission_prompt, endpoint from requirement]; hit count 3; threshold 2
+- DATABASE: not_classified; evidence [sql from mission_prompt]; hit count 1; threshold 2
 - DOCKER: classified; evidence [docker from mission_prompt]; hit count 1; threshold 1
 ```
 
@@ -381,7 +387,7 @@ battalion status
 
 `status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
 
-For v0.3.5, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
+For v0.3.6, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
 
 ```bash
 battalion assess
@@ -450,7 +456,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.3.5. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.3.6. Battalion does not execute the reviewers.
 
 ## Audit validation
 
