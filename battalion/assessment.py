@@ -10,6 +10,9 @@ from .storage import read_yaml
 
 
 SCHEMA_VERSION = "battalion.assessment.v2"
+ENGINEERING_COMPATIBILITY_DISCLAIMER = (
+    "Framework, SDK, runtime, library, package, platform, and standards versions must always be validated by the human engineering team for compatibility during implementation, testing, and assurance."
+)
 READINESS_LEVELS = ("NOT_READY", "PARTIALLY_READY", "READY_WITH_RISK", "READY")
 RECOMMENDATIONS = (
     "Resolve Clarifications",
@@ -627,6 +630,7 @@ def assess(workspace: Path) -> Dict[str, Any]:
         "readiness_reason": readiness_reason,
         "recommendation": recommendation,
         "recommendation_reason": recommendation_reason,
+        "engineering_compatibility_disclaimer": ENGINEERING_COMPATIBILITY_DISCLAIMER,
         "next_engineering_activity": recommendation,
         "mission_attributes": attributes,
         "attribute_sources": attribute_sources,
@@ -710,6 +714,10 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
 
 - **Readiness:** {assessment.get('readiness', '—')}
 - **Recommendation:** {assessment.get('recommendation', '—')}
+
+## Engineering Compatibility Disclaimer
+
+{assessment.get('engineering_compatibility_disclaimer', ENGINEERING_COMPATIBILITY_DISCLAIMER)}
 
 ### Readiness Reasons
 

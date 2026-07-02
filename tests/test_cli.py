@@ -422,6 +422,21 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(assessment["readiness"], "READY_WITH_RISK")
         self.assertEqual(assessment["recommendation"], "Proceed to Implementation")
 
+    def test_assessment_always_outputs_engineering_compatibility_disclaimer(self):
+        self.initialize_with_prompt("Build a small CLI utility.")
+        output = self.run_cli("assess")
+        expected = (
+            "Framework, SDK, runtime, library, package, platform, and standards versions must always be validated "
+            "by the human engineering team for compatibility during implementation, testing, and assurance."
+        )
+        self.assertIn("Engineering Compatibility Disclaimer", output)
+        self.assertIn(expected, output)
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        self.assertEqual(assessment["engineering_compatibility_disclaimer"], expected)
+        markdown = (self.workspace / "assessment.md").read_text(encoding="utf-8")
+        self.assertIn("## Engineering Compatibility Disclaimer", markdown)
+        self.assertIn(expected, markdown)
+
     def test_mission_prompt_remains_immutable_during_contract_generation(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         before = (self.workspace / "mission.yaml").read_bytes()

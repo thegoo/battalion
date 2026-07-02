@@ -445,6 +445,7 @@ def assessment(args, cwd):
 
 def print_assessment_summary(result):
     print(f"Readiness: {result['readiness']}")
+    print(f"\nEngineering Compatibility Disclaimer\n- {result['engineering_compatibility_disclaimer']}")
     print("\nMission Classification")
     attributes = result.get("mission_classification", {}).get("attributes", [])
     if not attributes:
