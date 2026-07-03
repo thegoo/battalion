@@ -683,16 +683,9 @@ def dispatch(args, cwd):
     workspace = workspace_or_exit(cwd)
     if args.executor:
         try:
-            metadata = dispatch_engineering_brief(workspace, args.executor, args.mode)
+            dispatch_engineering_brief(workspace, args.executor, args.mode)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
-        print(f"Dispatched engineering brief {metadata['dispatch_id']}")
-        print(f"Executor: {metadata['executor_name']}")
-        print(f"Mode: {metadata['mode']}")
-        print(f"Status: {metadata['status']}")
-        print(f"Duration seconds: {metadata['duration_seconds']}")
-        print(f"Package: {workspace / 'dispatches' / metadata['dispatch_id']}")
-        print("Next: review executor output, then run battalion assure.")
         return
     try:
         result = dispatch_next(workspace, allow_implementation_before_reviews=args.allow_implementation_before_reviews)

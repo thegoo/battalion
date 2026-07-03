@@ -1,7 +1,7 @@
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .storage import append_event, timestamp, write_yaml
 
@@ -47,7 +47,14 @@ def normalize_executor(executor: str) -> str:
     return EXECUTOR_ALIASES[normalized]
 
 
-def dispatch_engineering_brief(workspace: Path, executor: str, mode: str = "standard") -> Dict[str, Any]:
+def dispatch_engineering_brief(
+    workspace: Path,
+    executor: str,
+    mode: str = "standard",
+    output: Callable[[str], None] = print,
+    heartbeat_interval: float = 30.0,
+    poll_interval: float = 0.25,
+) -> Dict[str, Any]:
     executor_id = normalize_executor(executor)
     if mode not in SUPPORTED_MODES:
         raise ValueError(f"Unsupported dispatch mode: {mode}. Supported modes: {', '.join(sorted(SUPPORTED_MODES))}.")
@@ -73,6 +80,17 @@ def dispatch_engineering_brief(workspace: Path, executor: str, mode: str = "stan
     instructions_path = package_dir / "instructions.md"
     instructions_path.write_text(instructions, encoding="utf-8")
 
+    executor_name = SUPPORTED_EXECUTORS[executor_id]["display_name"]
+    output("Dispatching engineering mission...")
+    output("")
+    output(f"Executor: {executor_name}")
+    output(f"Mode: {mode}")
+    output("Mission: .battalion/mission-plan.md")
+    output(f"Dispatch package: {dispatch_id}")
+    output("")
+    output("Starting executor...")
+    output("")
+
     started = time.monotonic()
     started_at = timestamp()
     command = invocation_command(executor_id, instructions_path, mode)
@@ -85,8 +103,7 @@ def dispatch_engineering_brief(workspace: Path, executor: str, mode: str = "stan
         "architecture_references": architecture_references,
     }, actor="dispatcher")
     try:
-        completed = subprocess.run(command, cwd=workspace.parent)
-        return_code = completed.returncode
+        return_code = invoke_executor(command, workspace.parent, started, heartbeat_interval, poll_interval, output)
     except FileNotFoundError as exc:
         metadata = dispatch_metadata(
             dispatch_id,
@@ -104,6 +121,13 @@ def dispatch_engineering_brief(workspace: Path, executor: str, mode: str = "stan
         metadata["error"] = f"Executor command not found: {command[0]}"
         write_yaml(package_dir / "metadata.yaml", metadata)
         append_event(workspace, "dispatch_completed", metadata, actor="dispatcher")
+        output("")
+        output("Dispatch failed.")
+        output("")
+        output(f"Executor: {executor_name}")
+        output(f"Failure reason: Executor command not found: {command[0]}")
+        output("Exit code: unavailable")
+        output(f"Recommended action: Install or configure {executor_name} and try again.")
         raise ValueError(
             f"Executor command not found: {command[0]}. Install or configure {SUPPORTED_EXECUTORS[executor_id]['display_name']} and try again."
         ) from exc
@@ -124,7 +148,50 @@ def dispatch_engineering_brief(workspace: Path, executor: str, mode: str = "stan
     )
     write_yaml(package_dir / "metadata.yaml", metadata)
     append_event(workspace, "dispatch_completed", metadata, actor="dispatcher")
+    output("")
+    if status == "COMPLETED":
+        output("Dispatch complete.")
+        output("")
+        output(f"Executor: {executor_name}")
+        output(f"Status: {status}")
+        output(f"Duration: {metadata['duration_seconds']} seconds")
+        output("")
+        output("Dispatch package:")
+        output(f".battalion/dispatches/{dispatch_id}")
+        output("")
+        output("Next:")
+        output("battalion assure")
+    else:
+        output("Dispatch failed.")
+        output("")
+        output(f"Executor: {executor_name}")
+        output("Failure reason: Executor exited with a non-zero status.")
+        output(f"Exit code: {return_code}")
+        output("Recommended action: Review executor output above, correct the issue, and retry dispatch.")
     return metadata
+
+
+def invoke_executor(
+    command: List[str],
+    cwd: Path,
+    started: float,
+    heartbeat_interval: float,
+    poll_interval: float,
+    output: Callable[[str], None],
+) -> int:
+    process = subprocess.Popen(command, cwd=cwd)
+    next_heartbeat = started + heartbeat_interval
+    while True:
+        return_code = process.poll()
+        if return_code is not None:
+            return return_code
+        now = time.monotonic()
+        if heartbeat_interval > 0 and now >= next_heartbeat:
+            output("")
+            output("Still executing...")
+            output(f"Elapsed: {int(now - started)} seconds")
+            next_heartbeat = now + heartbeat_interval
+        time.sleep(poll_interval)
 
 
 def next_dispatch_id(workspace: Path) -> str:

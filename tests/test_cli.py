@@ -5,7 +5,6 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from battalion.assurance import assure
@@ -15,6 +14,18 @@ from battalion.dispatcher import load_assignments
 from battalion.mission_analyst import generate_mission_contract
 from battalion.models import AssuranceResult
 from battalion.storage import read_yaml, write_yaml
+
+
+class FakeProcess:
+    def __init__(self, return_code=0, running_polls=0):
+        self.return_code = return_code
+        self.running_polls = running_polls
+
+    def poll(self):
+        if self.running_polls:
+            self.running_polls -= 1
+            return None
+        return self.return_code
 
 
 class BattalionCliTests(unittest.TestCase):
@@ -926,13 +937,19 @@ class BattalionCliTests(unittest.TestCase):
         self.create_engineering_brief(["architecture.md"])
         (self.cwd / "architecture.md").write_text("# Architecture\n", encoding="utf-8")
         before = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
-        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["codex"], 0)) as runner:
+        with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess()) as runner:
             output = self.run_cli("dispatch", "--executor", "codex")
 
         after = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
         self.assertEqual(before, after)
-        self.assertIn("Dispatched engineering brief DSP-001", output)
+        self.assertIn("Dispatching engineering mission...", output)
         self.assertIn("Executor: Codex", output)
+        self.assertIn("Mode: standard", output)
+        self.assertIn("Mission: .battalion/mission-plan.md", output)
+        self.assertIn("Dispatch package: DSP-001", output)
+        self.assertIn("Starting executor...", output)
+        self.assertIn("Dispatch complete.", output)
+        self.assertIn("Next:\nbattalion assure", output)
         package = self.workspace / "dispatches" / "DSP-001"
         instructions = (package / "instructions.md").read_text(encoding="utf-8")
         self.assertIn("Battalion Dispatch Package — Codex", instructions)
@@ -947,7 +964,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_dispatch_records_metadata_and_audit_events(self):
         self.create_engineering_brief()
-        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["claude"], 0)):
+        with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess()):
             self.run_cli("dispatch", "--executor", "claude-code")
         metadata = read_yaml(self.workspace / "dispatches" / "DSP-001" / "metadata.yaml")
         self.assertEqual(metadata["dispatch_id"], "DSP-001")
@@ -964,7 +981,7 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_dispatch_auto_mode_allows_local_work_but_blocks_source_control_authority(self):
         self.create_engineering_brief()
-        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["codex"], 0)) as runner:
+        with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess()) as runner:
             self.run_cli("dispatch", "--executor", "codex", "--mode", "auto")
         command = runner.call_args.args[0]
         self.assertIn("--full-auto", command)
@@ -984,7 +1001,7 @@ class BattalionCliTests(unittest.TestCase):
         ]
         for index, (executor, command_prefix) in enumerate(selections, start=1):
             with self.subTest(executor=executor):
-                with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(command_prefix, 0)) as runner:
+                with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess()) as runner:
                     self.run_cli("dispatch", "--executor", executor)
                 self.assertEqual(runner.call_args.args[0][:len(command_prefix)], command_prefix)
                 metadata = read_yaml(self.workspace / "dispatches" / f"DSP-{index:03d}" / "metadata.yaml")
@@ -992,13 +1009,58 @@ class BattalionCliTests(unittest.TestCase):
 
     def test_dispatch_reports_failed_executor_completion_without_assurance(self):
         self.create_engineering_brief()
-        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["gh"], 7)):
+        with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess(return_code=7)):
             output = self.run_cli("dispatch", "--executor", "copilot")
         metadata = read_yaml(self.workspace / "dispatches" / "DSP-001" / "metadata.yaml")
         self.assertEqual(metadata["status"], "FAILED")
         self.assertEqual(metadata["return_code"], 7)
-        self.assertIn("Status: FAILED", output)
+        self.assertIn("Dispatch failed.", output)
+        self.assertIn("Executor: GitHub Copilot CLI", output)
+        self.assertIn("Failure reason: Executor exited with a non-zero status.", output)
+        self.assertIn("Exit code: 7", output)
+        self.assertIn("Recommended action: Review executor output above, correct the issue, and retry dispatch.", output)
         self.assertFalse((self.workspace / "reports" / "mission-report.md").exists())
+
+    def test_dispatch_command_not_found_prints_actionable_failure_summary(self):
+        self.create_engineering_brief()
+        output = StringIO()
+        with (
+            patch("battalion.executor_dispatch.subprocess.Popen", side_effect=FileNotFoundError()),
+            self.assertRaises(SystemExit) as raised,
+            redirect_stdout(output),
+        ):
+            main(["dispatch", "--executor", "codex"], self.cwd)
+        rendered = output.getvalue()
+        self.assertIn("Dispatch failed.", rendered)
+        self.assertIn("Executor: Codex", rendered)
+        self.assertIn("Failure reason: Executor command not found: codex", rendered)
+        self.assertIn("Exit code: unavailable", rendered)
+        self.assertIn("Recommended action: Install or configure Codex and try again.", rendered)
+        self.assertIn("Install or configure Codex", str(raised.exception))
+
+    def test_dispatch_heartbeat_is_displayed_while_executor_is_running(self):
+        self.create_engineering_brief()
+        with (
+            patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess(running_polls=1)),
+            patch("battalion.executor_dispatch.time.monotonic", side_effect=[0, 31, 31.2, 31.4]),
+            patch("battalion.executor_dispatch.time.sleep"),
+        ):
+            output = self.run_cli("dispatch", "--executor", "codex")
+        self.assertIn("Still executing...", output)
+        self.assertIn("Elapsed: 31 seconds", output)
+
+    def test_dispatch_forwards_executor_output_without_modification_where_testable(self):
+        self.create_engineering_brief()
+
+        def fake_invoke(command, cwd, started, heartbeat_interval, poll_interval, output):
+            output("executor says: build started")
+            output("executor says: build complete")
+            return 0
+
+        with patch("battalion.executor_dispatch.invoke_executor", side_effect=fake_invoke):
+            output = self.run_cli("dispatch", "--executor", "codex")
+        self.assertIn("executor says: build started", output)
+        self.assertIn("executor says: build complete", output)
 
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

@@ -357,6 +357,17 @@ Dispatch validates that `.battalion/mission-plan.md` exists, validates the reque
 
 Dispatch never modifies `.battalion/mission-plan.md`. It does not rewrite engineering constraints, assumptions, risks, architecture references, acceptance criteria, or implementation guidance. The generated dispatch package is a wrapper around the existing engineering specification.
 
+Before executor launch, Dispatch prints the executor, execution mode, mission plan path, and dispatch package identifier. While the executor is running, Dispatch streams executor output directly into the current terminal when supported. Executor stdout and stderr are displayed exactly as produced by the executor; Battalion forwards visibility only and does not interpret, summarize, or modify that output.
+
+If no executor output is visible while Battalion is waiting, Dispatch emits heartbeat updates every 30 seconds:
+
+```text
+Still executing...
+Elapsed: 30 seconds
+```
+
+The heartbeat stops immediately when the executor completes.
+
 Executor packages are written under:
 
 ```text
@@ -391,6 +402,8 @@ battalion assure
 ```
 
 Dispatch does not invoke Assurance automatically. Assurance remains an explicit engineering decision.
+
+If executor invocation fails, Dispatch prints an actionable failure summary with the executor, failure reason, exit code when available, and recommended corrective action. Stack traces are not shown for expected invocation failures.
 
 ## Dispatcher runtime
 
