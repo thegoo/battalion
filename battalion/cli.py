@@ -9,6 +9,7 @@ from .assessment import infer_attributes, write_assessment
 from .assurance import assure
 from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
+from .executor_dispatch import SUPPORTED_EXECUTORS, dispatch_engineering_brief
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .reporting import render_report
 from .storage import append_event, read_yaml, root, timestamp, write_yaml
@@ -680,6 +681,19 @@ def collect_clarification_actions(open_items):
 
 def dispatch(args, cwd):
     workspace = workspace_or_exit(cwd)
+    if args.executor:
+        try:
+            metadata = dispatch_engineering_brief(workspace, args.executor, args.mode)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"Dispatched engineering brief {metadata['dispatch_id']}")
+        print(f"Executor: {metadata['executor_name']}")
+        print(f"Mode: {metadata['mode']}")
+        print(f"Status: {metadata['status']}")
+        print(f"Duration seconds: {metadata['duration_seconds']}")
+        print(f"Package: {workspace / 'dispatches' / metadata['dispatch_id']}")
+        print("Next: review executor output, then run battalion assure.")
+        return
     try:
         result = dispatch_next(workspace, allow_implementation_before_reviews=args.allow_implementation_before_reviews)
     except ValueError as exc:
@@ -938,7 +952,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.4.2 deterministic mission assessment and planning")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.5.0 deterministic mission assessment, planning, and dispatch")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -951,6 +965,8 @@ def parser():
     p.add_argument("--reject", action="append", metavar="Q-ID=REASON", help="Reject a clarification; repeat as needed")
     p.add_argument("--supersede", action="append", metavar="Q-ID=VALUE", help="Supersede a clarification; repeat as needed")
     p = commands.add_parser("dispatch")
+    p.add_argument("--executor", help=f"Dispatch .battalion/mission-plan.md to a supported executor: {', '.join(sorted(SUPPORTED_EXECUTORS))}")
+    p.add_argument("--mode", choices=["auto", "standard"], default="standard", help="Executor invocation mode; auto permits routine local implementation work but never source control or deployment actions")
     p.add_argument("--allow-implementation-before-reviews", action="store_true", help="Explicitly allow owner implementation before planning/design reviews are completed")
     p = commands.add_parser("execute")
     p.add_argument("--outcome", choices=sorted(RESULT_OUTCOMES), default="COMPLETE")

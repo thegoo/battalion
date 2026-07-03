@@ -5,6 +5,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from battalion.assurance import assure
@@ -75,6 +76,32 @@ class BattalionCliTests(unittest.TestCase):
             review["status"] = "completed"
         write_yaml(self.ledger_path, ledger)
 
+    def create_engineering_brief(self, architecture_references=None):
+        architecture_references = architecture_references or []
+        self.initialize_with_prompt("Build a command-line utility.")
+        lines = [
+            "# Mission",
+            "",
+            "## Mission Objective",
+            "",
+            "Build a command-line utility.",
+            "",
+            "## Architecture References",
+            "",
+        ]
+        if architecture_references:
+            lines.extend(f"- {reference}" for reference in architecture_references)
+        else:
+            lines.append("No architecture reference filenames were supplied for this mission.")
+        lines.extend([
+            "",
+            "## Functional Requirements",
+            "",
+            "- Provide deterministic CLI behavior.",
+            "",
+        ])
+        (self.workspace / "mission-plan.md").write_text("\n".join(lines), encoding="utf-8")
+
     def result(self):
         return assure(self.workspace)
 
@@ -102,7 +129,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.4.2", output.getvalue())
+        self.assertIn("Battalion v0.5.0", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -875,6 +902,103 @@ class BattalionCliTests(unittest.TestCase):
         self.assertNotIn("Kubernetes", plan)
         self.assertNotIn("PostgreSQL", plan)
         self.assertNotIn("OAuth", plan)
+
+    def test_dispatch_unsupported_executor_fails(self):
+        self.create_engineering_brief()
+        with self.assertRaises(SystemExit) as raised:
+            main(["dispatch", "--executor", "banana"], self.cwd)
+        self.assertIn("Unsupported executor: banana", str(raised.exception))
+        self.assertIn("Supported executors: claude-code, codex, copilot", str(raised.exception))
+
+    def test_dispatch_missing_mission_plan_fails(self):
+        self.initialize_with_prompt("Build a command-line utility.")
+        with self.assertRaises(SystemExit) as raised:
+            main(["dispatch", "--executor", "codex"], self.cwd)
+        self.assertIn("Run battalion plan first", str(raised.exception))
+
+    def test_dispatch_missing_architecture_reference_filename_fails(self):
+        self.create_engineering_brief(["architecture.md"])
+        with self.assertRaises(SystemExit) as raised:
+            main(["dispatch", "--executor", "codex"], self.cwd)
+        self.assertIn("Architecture reference filename not found: architecture.md", str(raised.exception))
+
+    def test_dispatch_generates_executor_wrapper_and_preserves_brief(self):
+        self.create_engineering_brief(["architecture.md"])
+        (self.cwd / "architecture.md").write_text("# Architecture\n", encoding="utf-8")
+        before = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["codex"], 0)) as runner:
+            output = self.run_cli("dispatch", "--executor", "codex")
+
+        after = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+        self.assertEqual(before, after)
+        self.assertIn("Dispatched engineering brief DSP-001", output)
+        self.assertIn("Executor: Codex", output)
+        package = self.workspace / "dispatches" / "DSP-001"
+        instructions = (package / "instructions.md").read_text(encoding="utf-8")
+        self.assertIn("Battalion Dispatch Package — Codex", instructions)
+        self.assertIn("- Do not modify `.battalion/mission-plan.md`.", instructions)
+        self.assertIn("- Do not invoke `battalion assure`", instructions)
+        self.assertIn("- architecture.md", instructions)
+        self.assertIn("```markdown\n# Mission", instructions)
+        self.assertIn("Build a command-line utility.", instructions)
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.kwargs["cwd"], self.cwd)
+        self.assertEqual(runner.call_args.args[0][0:2], ["codex", "exec"])
+
+    def test_dispatch_records_metadata_and_audit_events(self):
+        self.create_engineering_brief()
+        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["claude"], 0)):
+            self.run_cli("dispatch", "--executor", "claude-code")
+        metadata = read_yaml(self.workspace / "dispatches" / "DSP-001" / "metadata.yaml")
+        self.assertEqual(metadata["dispatch_id"], "DSP-001")
+        self.assertEqual(metadata["executor"], "claude-code")
+        self.assertEqual(metadata["executor_name"], "Claude Code")
+        self.assertEqual(metadata["status"], "COMPLETED")
+        self.assertEqual(metadata["return_code"], 0)
+        self.assertEqual(metadata["mission_plan"], "mission-plan.md")
+        self.assertEqual(metadata["instructions"], "instructions.md")
+        self.assertEqual(metadata["next_step"], "Run battalion assure after reviewing executor output.")
+        events = [json.loads(line) for line in (self.workspace / "events.jsonl").read_text().splitlines()]
+        self.assertTrue(any(event["type"] == "dispatch_started" for event in events))
+        self.assertTrue(any(event["type"] == "dispatch_completed" for event in events))
+
+    def test_dispatch_auto_mode_allows_local_work_but_blocks_source_control_authority(self):
+        self.create_engineering_brief()
+        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["codex"], 0)) as runner:
+            self.run_cli("dispatch", "--executor", "codex", "--mode", "auto")
+        command = runner.call_args.args[0]
+        self.assertIn("--full-auto", command)
+        metadata = read_yaml(self.workspace / "dispatches" / "DSP-001" / "metadata.yaml")
+        self.assertEqual(metadata["mode"], "auto")
+        instructions = (self.workspace / "dispatches" / "DSP-001" / "instructions.md").read_text(encoding="utf-8")
+        self.assertIn("Auto mode is enabled.", instructions)
+        self.assertIn("creating files, modifying files, switching local branches when required, running builds, executing tests", instructions)
+        self.assertIn("does not authorize git commit, git push, pull request creation, merge operations, deployment, or remote repository modification", instructions)
+
+    def test_dispatch_executor_selection_supports_codex_claude_and_copilot(self):
+        self.create_engineering_brief()
+        selections = [
+            ("codex", ["codex", "exec"]),
+            ("claude-code", ["claude", "-p"]),
+            ("copilot", ["gh", "copilot", "suggest"]),
+        ]
+        for index, (executor, command_prefix) in enumerate(selections, start=1):
+            with self.subTest(executor=executor):
+                with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(command_prefix, 0)) as runner:
+                    self.run_cli("dispatch", "--executor", executor)
+                self.assertEqual(runner.call_args.args[0][:len(command_prefix)], command_prefix)
+                metadata = read_yaml(self.workspace / "dispatches" / f"DSP-{index:03d}" / "metadata.yaml")
+                self.assertEqual(metadata["executor"], executor)
+
+    def test_dispatch_reports_failed_executor_completion_without_assurance(self):
+        self.create_engineering_brief()
+        with patch("battalion.executor_dispatch.subprocess.run", return_value=CompletedProcess(["gh"], 7)):
+            output = self.run_cli("dispatch", "--executor", "copilot")
+        metadata = read_yaml(self.workspace / "dispatches" / "DSP-001" / "metadata.yaml")
+        self.assertEqual(metadata["status"], "FAILED")
+        self.assertEqual(metadata["return_code"], 7)
+        self.assertIn("Status: FAILED", output)
+        self.assertFalse((self.workspace / "reports" / "mission-report.md").exists())
 
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
