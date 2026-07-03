@@ -1,4 +1,4 @@
-# Battalion v0.4.2 — Planning Engine MVP
+# Battalion v0.5.0 — Dispatch MVP
 
 Battalion is a deterministic, local mission-governance and runtime layer for software delivery. Mission Analyst turns an authoritative prompt into a traceable mission contract, Mission Assessment evaluates whether engineering work is ready to begin, humans resolve clarification questions, Mission Assurance independently validates completed work, and the Dispatcher owns sequential runtime assignment state.
 
@@ -337,6 +337,74 @@ Planning does not dispatch work, execute work, invoke AI, inspect architecture d
 
 Manual requirement entry remains available through `battalion plan --requirement ...` for compatibility and direct contract editing, but the primary documented workflow is `init → assess → plan`.
 
+## Dispatch executor handoff
+
+```bash
+battalion dispatch --executor codex
+battalion dispatch --executor claude-code
+battalion dispatch --executor copilot
+```
+
+Dispatch assigns the engineering mission to a selected executor. Planning remains the source of engineering truth: `.battalion/mission-plan.md` defines what must be built. Dispatch determines who receives the mission. The executor determines how the mission is accomplished. Assurance determines whether completed work satisfies the mission.
+
+Supported executors for the MVP are:
+
+- Codex
+- Claude Code
+- GitHub Copilot CLI
+
+Dispatch validates that `.battalion/mission-plan.md` exists, validates the requested executor, validates that architecture reference filenames recorded in the plan are present in the mission directory, creates an executor-specific dispatch package, invokes the selected executor, waits for completion, and records dispatch metadata.
+
+Dispatch never modifies `.battalion/mission-plan.md`. It does not rewrite engineering constraints, assumptions, risks, architecture references, acceptance criteria, or implementation guidance. The generated dispatch package is a wrapper around the existing engineering specification.
+
+Before executor launch, Dispatch prints the executor, execution mode, mission plan path, and dispatch package identifier. While the executor is running, Dispatch streams executor output directly into the current terminal when supported. Executor stdout and stderr are displayed exactly as produced by the executor; Battalion forwards visibility only and does not interpret, summarize, or modify that output.
+
+If no executor output is visible while Battalion is waiting, Dispatch emits heartbeat updates every 30 seconds:
+
+```text
+Still executing...
+Elapsed: 30 seconds
+```
+
+The heartbeat stops immediately when the executor completes.
+
+Executor packages are written under:
+
+```text
+.battalion/dispatches/DSP-001/
+```
+
+Each package includes `instructions.md` and `metadata.yaml`. The wrapper instructions communicate mission boundaries and executor-specific handoff context; they do not prescribe implementation strategy.
+
+Dispatch uses the user's existing executor configuration. Battalion does not configure models, agent settings, hooks, skills, MCP configuration, repository permissions, platform-specific preferences, or executor-specific capabilities.
+
+Battalion-provided context is intentionally narrow:
+
+- `.battalion/mission-plan.md`
+- architecture document filenames recorded during Planning
+
+Battalion does not inspect architecture documents or reason over the repository during Dispatch. The selected executor is responsible for leveraging repository context through its own native capabilities.
+
+### Auto mode
+
+```bash
+battalion dispatch --executor codex --mode auto
+```
+
+Auto mode permits the executor to perform routine local engineering work, including creating files, modifying files, switching local branches when required, running builds, executing tests, and executing local tooling.
+
+Auto mode does not authorize git commits, git pushes, pull request creation, merge operations, deployment, or remote repository modification. Those actions remain outside the Dispatch MVP and require explicit human action.
+
+After executor completion, Dispatch reports the completion status and recommends:
+
+```bash
+battalion assure
+```
+
+Dispatch does not invoke Assurance automatically. Assurance remains an explicit engineering decision.
+
+If executor invocation fails, Dispatch prints an actionable failure summary with the executor, failure reason, exit code when available, and recommended corrective action. Stack traces are not shown for expected invocation failures.
+
 ## Dispatcher runtime
 
 The Dispatcher is the only authority allowed to advance runtime execution. Units do not mark missions complete, queue additional work, approve themselves, or skip requirements. Units only report result packets; the Dispatcher consumes those packets and decides the next action.
@@ -365,7 +433,7 @@ Valid assignment states are `CREATED`, `ASSIGNED`, `EXECUTING`, `WAITING`, `BLOC
 
 Assignments remain owned by their assigned unit until the Dispatcher completes, reassigns, or aborts the work. `BLOCKED` and `WAITING` assignments remain active and keep the same assignment ID, scoped context, ownership, evidence, and audit history. A retry does not create a replacement assignment.
 
-### Dispatch
+### Runtime assignment dispatch
 
 ```bash
 battalion dispatch
@@ -425,7 +493,7 @@ battalion status
 
 `status` is the runtime dashboard. It displays the mission, current phase, assignments, unit assignments, blocked work, completed work, pending work, clarifications, and the Dispatcher recommendation.
 
-For v0.4.2, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
+For v0.5.0, clarification decisions are normally recorded through `battalion clarify`; `battalion assess --interactive` is available as an explicit convenience workflow. Run `battalion assess` again after clarification resolution to evaluate implementation readiness:
 
 ```bash
 battalion assess
@@ -494,7 +562,7 @@ Every completed requirement must have at least one non-blank evidence path. Evid
 - A valid pending review keeps the mission AMBER / NO-GO.
 - Every required review must be completed before GREEN is possible.
 
-Review records are governance artifacts in v0.4.2. Battalion does not execute the reviewers.
+Review records are governance artifacts in v0.5.0. Battalion does not execute the reviewers.
 
 ## Audit validation
 
