@@ -61,7 +61,7 @@ battalion init \
   --prompt "Build a hello world REST API."
 ```
 
-The `.yaml` files use JSON syntax, which is valid YAML 1.2 and keeps the CLI dependency-free.
+Battalion `.yaml` artifacts are serialized as proper YAML through PyYAML. The project depends on PyYAML so artifact files remain truthful to their declared format while staying deterministic, human-readable, and human-editable.
 
 ## Mission Assessment as the front door
 
@@ -590,6 +590,16 @@ Findings identify the mission or requirement and the precise failed contract rul
 ## Doctrine
 
 Battalion preserves eight principles: mission first; evidence over assertion; requirement traceability; zero trust; adversarial review; separation of duties; human authority; and an audit trail for every material CLI action.
+
+### Artifact Serialization Doctrine
+
+Battalion artifacts shall always be truthful to their declared serialization format:
+
+- `.yaml` files are serialized as proper YAML.
+- `.json` files are serialized as proper JSON.
+- `.jsonl` files are serialized as JSON Lines.
+
+Battalion does not intentionally serialize JSON into a `.yaml` artifact simply because a YAML parser would accept it.
 
 ## Standing team
 

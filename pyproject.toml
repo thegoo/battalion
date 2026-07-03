@@ -9,6 +9,7 @@ name = "battalion-cli"
 version = "0.5.0"
 description = "Deterministic mission assessment, planning, and dispatch"
 requires-python = ">=3.9"
+dependencies = ["PyYAML>=6.0,<7.0"]
 
 [project.scripts]
 battalion = "battalion.cli:main"
