@@ -7,6 +7,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from battalion.assurance import assure
 from battalion.classification import ATTRIBUTE_SCHEMA_VERSION, AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
 from battalion.cli import main
@@ -128,12 +130,71 @@ class BattalionCliTests(unittest.TestCase):
         for identifier in ("REST_API", "HTTP_ENDPOINT", "USER_INTERFACE", "DATABASE", "SECURITY", "TESTING_REQUIRED", "NODE", "TYPESCRIPT", "DOTNET", "DOCKER"):
             self.assertIn(identifier, identifiers)
 
+    def test_generated_yaml_artifacts_are_proper_yaml_not_json_formatted(self):
+        self.initialize_with_prompt("Mission\n\nBuild a production-ready REST API.\n\nBackground\n\nOperators need a health check.")
+        for name in ("mission.yaml", "agents.yaml", "ledger.yaml"):
+            content = (self.workspace / name).read_text(encoding="utf-8")
+            self.assertNotRegex(content.lstrip(), r"^[\[{]")
+            self.assertNotIn('{\n  "', content)
+            self.assertIsInstance(yaml.safe_load(content), dict)
+        mission_content = (self.workspace / "mission.yaml").read_text(encoding="utf-8")
+        ledger_content = (self.workspace / "ledger.yaml").read_text(encoding="utf-8")
+        agents_content = (self.workspace / "agents.yaml").read_text(encoding="utf-8")
+        self.assertIn("id: M-001", mission_content)
+        self.assertIn("mission_prompt: |", mission_content)
+        self.assertIn("  Build a production-ready REST API.", mission_content)
+        self.assertNotIn("\\n", mission_content)
+        self.assertIn("doctrine:", mission_content)
+        self.assertIn("mission_prompt: |", ledger_content)
+        self.assertIn("requirements: []", ledger_content)
+        self.assertIn("agents:", agents_content)
+        self.assertIn("- id: mission_analyst", agents_content)
+
+    def test_yaml_serialization_preserves_data_and_is_deterministic(self):
+        data = {
+            "mission_id": "M-001",
+            "requirements": [
+                {
+                    "id": "R-001",
+                    "statement": "Validate YAML serialization",
+                    "acceptance": ["artifact parses", "schema preserved"],
+                    "evidence": [],
+                }
+            ],
+        }
+        first = self.cwd / "first.yaml"
+        second = self.cwd / "second.yaml"
+        write_yaml(first, data)
+        write_yaml(second, data)
+        self.assertEqual(first.read_text(encoding="utf-8"), second.read_text(encoding="utf-8"))
+        self.assertEqual(read_yaml(first), data)
+        self.assertEqual(yaml.safe_load(first.read_text(encoding="utf-8")), data)
+        self.assertNotRegex(first.read_text(encoding="utf-8").lstrip(), r"^[\[{]")
+
+    def test_yaml_serialization_uses_literal_blocks_for_multiline_strings(self):
+        mission_prompt = (
+            "Mission\n\n"
+            "Build a production-ready REST API that exposes a single application health endpoint.\n\n"
+            "Background\n\n"
+            "Operators need a simple health check."
+        )
+        path = self.cwd / "mission.yaml"
+        write_yaml(path, {"mission_prompt": mission_prompt})
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("mission_prompt: |", content)
+        self.assertIn("  Build a production-ready REST API", content)
+        self.assertNotIn("\\n", content)
+        self.assertNotIn("\\", content)
+        self.assertEqual(read_yaml(path)["mission_prompt"], mission_prompt)
+
     def test_console_entry_point_is_registered(self):
         repository = Path(__file__).resolve().parents[1]
         pyproject = (repository / "pyproject.toml").read_text(encoding="utf-8")
         setup_compatibility = (repository / "setup.py").read_text(encoding="utf-8")
         self.assertIn('battalion = "battalion.cli:main"', pyproject)
         self.assertIn('"battalion=battalion.cli:main"', setup_compatibility)
+        self.assertIn('dependencies = ["PyYAML>=6.0,<7.0", "pytest>=8,<10"]', pyproject)
+        self.assertIn('install_requires=["PyYAML>=6.0,<7.0", "pytest>=8,<10"]', setup_compatibility)
 
     def test_cli_help_executes_successfully(self):
         output = StringIO()
@@ -975,6 +1036,11 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(metadata["mission_plan"], "mission-plan.md")
         self.assertEqual(metadata["instructions"], "instructions.md")
         self.assertEqual(metadata["next_step"], "Run battalion assure after reviewing executor output.")
+        metadata_content = (self.workspace / "dispatches" / "DSP-001" / "metadata.yaml").read_text(encoding="utf-8")
+        self.assertNotRegex(metadata_content.lstrip(), r"^[\[{]")
+        self.assertIn("dispatch_id: DSP-001", metadata_content)
+        self.assertIn("executor: claude-code", metadata_content)
+        self.assertEqual(yaml.safe_load(metadata_content), metadata)
         events = [json.loads(line) for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         self.assertTrue(any(event["type"] == "dispatch_started" for event in events))
         self.assertTrue(any(event["type"] == "dispatch_completed" for event in events))
@@ -1234,6 +1300,11 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(assignments[0]["assignment_type"], "review")
         self.assertEqual(assignments[0]["reviewer"], "architect")
         self.assertEqual(assignments[0]["status"], "ASSIGNED")
+        assignments_content = (self.workspace / "assignments.yaml").read_text(encoding="utf-8")
+        self.assertNotRegex(assignments_content.lstrip(), r"^[\[{]")
+        self.assertIn("assignments:", assignments_content)
+        self.assertIn("- id: ASG-001", assignments_content)
+        self.assertEqual(yaml.safe_load(assignments_content)["assignments"][0]["id"], "ASG-001")
         events = [json.loads(line)["type"] for line in (self.workspace / "events.jsonl").read_text().splitlines()]
         self.assertIn("requirement_added", events)
         self.assertIn("plan_created", events)

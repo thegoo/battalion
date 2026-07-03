@@ -6,24 +6,26 @@ This slice does **not** execute autonomous agents, orchestrate models, call LLMs
 
 ## Development installation
 
-Battalion requires Python 3.9 or newer and has no runtime dependencies.
+Battalion requires Python 3.9 or newer. Runtime dependencies are declared in `pyproject.toml`; PyYAML is used to read and write proper YAML artifacts.
 
 ```bash
 cd /path/to/battalion
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install -e .
 which battalion
 battalion --help
 ```
 
 `which battalion` must resolve to the active environment's executable, such as `/path/to/battalion/.venv/bin/battalion`. The project includes a compatibility entry point for older pip versions as well as the standard `pyproject.toml` console script.
 
-For development:
+For development, run tests through the same Python environment that installed the project:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m pytest
 ```
+
+The normal editable install includes the dependencies needed to run the test suite. Use `python -m pytest` rather than a globally installed `pytest` executable so the test runner uses the same environment where Battalion and its dependencies were installed.
 
 ## Running a mission anywhere
 
@@ -61,7 +63,7 @@ battalion init \
   --prompt "Build a hello world REST API."
 ```
 
-The `.yaml` files use JSON syntax, which is valid YAML 1.2 and keeps the CLI dependency-free.
+Battalion `.yaml` artifacts are serialized as proper YAML through PyYAML. The project depends on PyYAML so artifact files remain truthful to their declared format while staying deterministic, human-readable, and human-editable.
 
 ## Mission Assessment as the front door
 
@@ -590,6 +592,16 @@ Findings identify the mission or requirement and the precise failed contract rul
 ## Doctrine
 
 Battalion preserves eight principles: mission first; evidence over assertion; requirement traceability; zero trust; adversarial review; separation of duties; human authority; and an audit trail for every material CLI action.
+
+### Artifact Serialization Doctrine
+
+Battalion artifacts shall always be truthful to their declared serialization format:
+
+- `.yaml` files are serialized as proper YAML.
+- `.json` files are serialized as proper JSON.
+- `.jsonl` files are serialized as JSON Lines.
+
+Battalion does not intentionally serialize JSON into a `.yaml` artifact simply because a YAML parser would accept it.
 
 ## Standing team
 

@@ -3,8 +3,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 WORKSPACE = ".battalion"
+
+
+class BattalionYamlDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_string(dumper, value):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+BattalionYamlDumper.add_representer(str, _represent_string)
 
 
 def root(path: Path) -> Path:
@@ -13,13 +27,16 @@ def root(path: Path) -> Path:
 
 def read_yaml(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
         raise ValueError(f"cannot read {path.name}: {exc}") from exc
 
 
 def write_yaml(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        yaml.dump(data, Dumper=BattalionYamlDumper, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def timestamp() -> str:

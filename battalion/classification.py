@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+import yaml
+
 
 ATTRIBUTE_SCHEMA_VERSION = "battalion.attributes.v1"
 DEFAULT_CATALOG_PATH = Path(__file__).with_name("attributes.yml")
@@ -102,7 +104,11 @@ def parse_attribute_catalog(text: str) -> Dict[str, Any]:
         raise ValueError("attribute catalog is empty")
     if stripped.startswith("{"):
         raise ValueError("JSON/object-literal catalogs are not accepted")
-    return _parse_simple_yaml_catalog(stripped.splitlines())
+    try:
+        catalog = yaml.safe_load(stripped)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid YAML: {exc}") from exc
+    return catalog
 
 
 def normalize_attribute_catalog(catalog: Dict[str, Any]) -> Dict[str, Any]:
@@ -154,68 +160,6 @@ def normalize_attribute_catalog(catalog: Dict[str, Any]) -> Dict[str, Any]:
             "threshold": threshold,
         })
     return {"schema_version": ATTRIBUTE_SCHEMA_VERSION, "attributes": attributes}
-
-
-def _parse_simple_yaml_catalog(lines: List[str]) -> Dict[str, Any]:
-    result: Dict[str, Any] = {}
-    attributes: Dict[str, Dict[str, Any]] = {}
-    current_attribute = None
-    current_list = None
-    for raw_line in lines:
-        line = raw_line.rstrip()
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip()
-        if indent == 0:
-            key, value = _split_yaml_key_value(stripped)
-            if key == "attributes":
-                result["attributes"] = attributes
-            else:
-                result[key] = value
-            current_attribute = None
-            current_list = None
-            continue
-        if indent == 2:
-            key, value = _split_yaml_key_value(stripped)
-            if key == "-":
-                raise ValueError("attribute catalog attributes must be a mapping")
-            current_attribute = key
-            current_list = None
-            attributes[current_attribute] = {}
-            if value not in {"", None}:
-                raise ValueError(f"attribute {current_attribute} must be a mapping")
-            continue
-        if indent == 4 and current_attribute:
-            key, value = _split_yaml_key_value(stripped)
-            if value == "":
-                current_list = key
-                attributes[current_attribute][key] = []
-            else:
-                current_list = None
-                attributes[current_attribute][key] = _coerce_yaml_scalar(value)
-            continue
-        if indent == 6 and current_attribute and current_list and stripped.startswith("- "):
-            attributes[current_attribute][current_list].append(_coerce_yaml_scalar(stripped[2:].strip()))
-            continue
-        raise ValueError(f"unsupported attribute catalog YAML line: {raw_line}")
-    return result
-
-
-def _split_yaml_key_value(line: str) -> tuple:
-    if ":" not in line:
-        raise ValueError(f"invalid attribute catalog YAML line: {line}")
-    key, value = line.split(":", 1)
-    return key.strip(), value.strip()
-
-
-def _coerce_yaml_scalar(value: str) -> Any:
-    value = value.strip()
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-    if re.fullmatch(r"-?\d+", value):
-        return int(value)
-    return value
 
 
 def _add_source(sources: List[Dict[str, str]], label: str, value: Any) -> None:
