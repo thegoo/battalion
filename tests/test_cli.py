@@ -131,7 +131,7 @@ class BattalionCliTests(unittest.TestCase):
             self.assertIn(identifier, identifiers)
 
     def test_generated_yaml_artifacts_are_proper_yaml_not_json_formatted(self):
-        self.initialize()
+        self.initialize_with_prompt("Mission\n\nBuild a production-ready REST API.\n\nBackground\n\nOperators need a health check.")
         for name in ("mission.yaml", "agents.yaml", "ledger.yaml"):
             content = (self.workspace / name).read_text(encoding="utf-8")
             self.assertNotRegex(content.lstrip(), r"^[\[{]")
@@ -141,7 +141,11 @@ class BattalionCliTests(unittest.TestCase):
         ledger_content = (self.workspace / "ledger.yaml").read_text(encoding="utf-8")
         agents_content = (self.workspace / "agents.yaml").read_text(encoding="utf-8")
         self.assertIn("id: M-001", mission_content)
+        self.assertIn("mission_prompt: |", mission_content)
+        self.assertIn("  Build a production-ready REST API.", mission_content)
+        self.assertNotIn("\\n", mission_content)
         self.assertIn("doctrine:", mission_content)
+        self.assertIn("mission_prompt: |", ledger_content)
         self.assertIn("requirements: []", ledger_content)
         self.assertIn("agents:", agents_content)
         self.assertIn("- id: mission_analyst", agents_content)
@@ -166,6 +170,22 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(read_yaml(first), data)
         self.assertEqual(yaml.safe_load(first.read_text(encoding="utf-8")), data)
         self.assertNotRegex(first.read_text(encoding="utf-8").lstrip(), r"^[\[{]")
+
+    def test_yaml_serialization_uses_literal_blocks_for_multiline_strings(self):
+        mission_prompt = (
+            "Mission\n\n"
+            "Build a production-ready REST API that exposes a single application health endpoint.\n\n"
+            "Background\n\n"
+            "Operators need a simple health check."
+        )
+        path = self.cwd / "mission.yaml"
+        write_yaml(path, {"mission_prompt": mission_prompt})
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("mission_prompt: |", content)
+        self.assertIn("  Build a production-ready REST API", content)
+        self.assertNotIn("\\n", content)
+        self.assertNotIn("\\", content)
+        self.assertEqual(read_yaml(path)["mission_prompt"], mission_prompt)
 
     def test_console_entry_point_is_registered(self):
         repository = Path(__file__).resolve().parents[1]

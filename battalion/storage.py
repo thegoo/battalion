@@ -9,6 +9,18 @@ import yaml
 WORKSPACE = ".battalion"
 
 
+class BattalionYamlDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_string(dumper, value):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+BattalionYamlDumper.add_representer(str, _represent_string)
+
+
 def root(path: Path) -> Path:
     return path / WORKSPACE
 
@@ -21,7 +33,10 @@ def read_yaml(path: Path) -> Any:
 
 
 def write_yaml(path: Path, data: Any) -> None:
-    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    path.write_text(
+        yaml.dump(data, Dumper=BattalionYamlDumper, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def timestamp() -> str:
