@@ -174,7 +174,9 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn('battalion = "battalion.cli:main"', pyproject)
         self.assertIn('"battalion=battalion.cli:main"', setup_compatibility)
         self.assertIn('dependencies = ["PyYAML>=6.0,<7.0"]', pyproject)
+        self.assertIn('dev = ["pytest>=8,<10"]', pyproject)
         self.assertIn('install_requires=["PyYAML>=6.0,<7.0"]', setup_compatibility)
+        self.assertIn('extras_require={"dev": ["pytest>=8,<10"]}', setup_compatibility)
 
     def test_cli_help_executes_successfully(self):
         output = StringIO()

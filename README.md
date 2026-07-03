@@ -6,24 +6,27 @@ This slice does **not** execute autonomous agents, orchestrate models, call LLMs
 
 ## Development installation
 
-Battalion requires Python 3.9 or newer and has no runtime dependencies.
+Battalion requires Python 3.9 or newer. Runtime dependencies are declared in `pyproject.toml`; PyYAML is used to read and write proper YAML artifacts.
 
 ```bash
 cd /path/to/battalion
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install -e ".[dev]"
 which battalion
 battalion --help
 ```
 
 `which battalion` must resolve to the active environment's executable, such as `/path/to/battalion/.venv/bin/battalion`. The project includes a compatibility entry point for older pip versions as well as the standard `pyproject.toml` console script.
 
-For development:
+For development, run tests through the same Python environment that installed the project:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m pytest
+python -m unittest discover -s tests -v
 ```
+
+Avoid invoking a globally installed `pytest` from a different Python interpreter. If `pytest` reports `ModuleNotFoundError: No module named 'yaml'`, the test runner is not using the environment where Battalion was installed. Re-activate `.venv` and run `python -m pytest`.
 
 ## Running a mission anywhere
 

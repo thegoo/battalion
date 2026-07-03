@@ -11,5 +11,6 @@ setup(
     packages=find_packages(include=("battalion", "battalion.*")),
     package_data={"battalion": ["attributes.yml"]},
     install_requires=["PyYAML>=6.0,<7.0"],
+    extras_require={"dev": ["pytest>=8,<10"]},
     entry_points={"console_scripts": ["battalion=battalion.cli:main"]},
 )
