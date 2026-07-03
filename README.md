@@ -12,7 +12,7 @@ Battalion requires Python 3.9 or newer. Runtime dependencies are declared in `py
 cd /path/to/battalion
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install -e .
 which battalion
 battalion --help
 ```
@@ -22,11 +22,10 @@ battalion --help
 For development, run tests through the same Python environment that installed the project:
 
 ```bash
-python -m pytest
-python -m unittest discover -s tests -v
+pytest
 ```
 
-Avoid invoking a globally installed `pytest` from a different Python interpreter. If `pytest` reports `ModuleNotFoundError: No module named 'yaml'`, the test runner is not using the environment where Battalion was installed. Re-activate `.venv` and run `python -m pytest`.
+The normal editable install includes the dependencies needed to run the test suite.
 
 ## Running a mission anywhere
 
