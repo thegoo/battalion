@@ -22,10 +22,10 @@ battalion --help
 For development, run tests through the same Python environment that installed the project:
 
 ```bash
-pytest
+python -m pytest
 ```
 
-The normal editable install includes the dependencies needed to run the test suite.
+The normal editable install includes the dependencies needed to run the test suite. Use `python -m pytest` rather than a globally installed `pytest` executable so the test runner uses the same environment where Battalion and its dependencies were installed.
 
 ## Running a mission anywhere
 
