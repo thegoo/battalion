@@ -529,7 +529,6 @@ def _observed_status_value(workspace, requirement):
             r'"status"\s*:\s*"([^"]+)"',
             r"'status'\s*:\s*'([^']+)'",
             r"\bstatus\s*:\s*[\"']([^\"']+)[\"']",
-            r"\bstatus\s*[:=]\s*([A-Za-z0-9_.:-]+)",
         ):
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:

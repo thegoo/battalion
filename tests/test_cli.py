@@ -1963,6 +1963,27 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
         self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
 
+    def test_assurance_does_not_treat_test_type_annotations_as_observed_response_status(self):
+        self.write_assurance_contract([
+            "The response provides a machine-readable health result",
+        ], [], "completed", "planned")
+        source = self.cwd / "src" / "app.ts"
+        source.parent.mkdir()
+        source.write_text('response.status(200).json({ status: "Healthy", timestamp: new Date().toISOString() });\n', encoding="utf-8")
+        test = self.cwd / "src" / "app.test.ts"
+        test.write_text(
+            "type HttpResponse = {\n"
+            "  status: number;\n"
+            "  body: string;\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        result = assure(self.workspace)
+        check = result.engineering_result["checks"][0]
+        self.assertEqual(check["result"], "VERIFIED")
+        self.assertEqual(check["observed"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(check["evidence"], ["src/app.ts"])
+
     def test_assure_static_verifies_common_project_artifacts(self):
         self.write_assurance_contract([
             "Application source is implemented in TypeScript",
