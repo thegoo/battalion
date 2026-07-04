@@ -9,6 +9,21 @@ All notable Battalion changes are summarized here. Product usage documentation l
 - Rewrote `README.md` as product documentation rather than implementation history.
 - Moved release and slice summaries into `CHANGELOG.md`.
 
+## v0.7.0 — Mission Resolve
+
+### Added
+
+- Added `battalion resolve`.
+- Added deterministic resolution packages under `.battalion/resolutions/RES-###/`.
+- Added Resolve package metadata referencing the original mission, assessment, mission plan, and originating assurance report hash.
+- Added executor handoff for Resolve using the same supported executors and modes as Dispatch.
+
+### Changed
+
+- Completed the engineering correction loop: Dispatch → Assure → Resolve → Assure.
+- Resolve packages include only failed engineering checks and exclude verified checks, unable-to-verify checks, governance findings, pending reviews, clarification history, and audit history.
+- Bumped package version to `0.7.0`.
+
 ## v0.6.1 — Mission Assurance Runtime Validation
 
 ### Added

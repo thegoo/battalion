@@ -11,6 +11,7 @@ from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .executor_dispatch import SUPPORTED_EXECUTORS, dispatch_engineering_brief
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
+from .mission_resolve import resolve_mission
 from .reporting import render_report
 from .storage import append_event, read_yaml, root, timestamp, write_yaml
 
@@ -983,8 +984,16 @@ def report(args, cwd):
     print(f"Generated {target}")
 
 
+def resolve(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    try:
+        resolve_mission(workspace, executor=args.executor, mode=args.mode)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.6.1 deterministic mission assessment, planning, dispatch, and assurance")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.7.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -1015,6 +1024,9 @@ def parser():
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
     p = commands.add_parser("assure")
     p.add_argument("--run", action="store_true", help="Run deterministic local runtime validation in addition to static assurance")
+    p = commands.add_parser("resolve")
+    p.add_argument("--executor", help=f"Send failed Mission Assurance findings to a supported executor: {', '.join(sorted(SUPPORTED_EXECUTORS))}")
+    p.add_argument("--mode", choices=["auto", "standard"], default="standard", help="Executor invocation mode; auto permits routine local implementation work but never source control or deployment actions")
     commands.add_parser("report")
     return result
 
@@ -1030,6 +1042,7 @@ def main(argv=None, cwd=None):
         "status": status,
         "assess": assessment,
         "assure": assurance,
+        "resolve": resolve,
         "report": report,
     }[args.command](args, cwd)
 

@@ -154,6 +154,78 @@ class BattalionCliTests(unittest.TestCase):
         ])
         (self.workspace / "mission-plan.md").write_text("\n".join(lines), encoding="utf-8")
 
+    def create_resolve_context(self, engineering_status="RED", checks=None):
+        self.create_engineering_brief()
+        (self.workspace / "assessment.json").write_text(json.dumps({
+            "schema_version": "battalion.assessment.v2",
+            "readiness": "READY",
+            "mission_attributes": ["REST_API", "HTTP_ENDPOINT"],
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        checks = checks if checks is not None else [
+            {
+                "check_id": "ENG-001",
+                "requirement_id": "R-001",
+                "criterion": "CLI exits successfully",
+                "check_type": "process_exit",
+                "expected": 0,
+                "observed": 0,
+                "evidence": ["tests/test_cli.py"],
+                "result": "VERIFIED",
+                "finding": "R-001: Verified CLI exits successfully.",
+                "recommendation": "No action required.",
+            },
+            {
+                "check_id": "ENG-002",
+                "requirement_id": "R-002",
+                "criterion": "Response body status equals Healthy",
+                "check_type": "response_body_literal",
+                "expected": {"field": "status", "value": "Healthy"},
+                "observed": {"field": "status", "value": "ok"},
+                "evidence": ["src/app.ts"],
+                "result": "FAILED",
+                "finding": 'R-002: Expected response status field "Healthy"; observed "ok".',
+                "recommendation": "Update implementation or engineering contract.",
+            },
+            {
+                "check_id": "ENG-003",
+                "requirement_id": "R-003",
+                "criterion": "Docker image builds successfully",
+                "check_type": "docker_build",
+                "expected": "docker build succeeds",
+                "observed": None,
+                "evidence": [],
+                "result": "UNABLE_TO_VERIFY",
+                "finding": "R-003: Unable to verify Docker build.",
+                "recommendation": "Provide Docker build evidence.",
+            },
+        ]
+        assurance = {
+            "status": "RED" if engineering_status == "RED" else "GREEN",
+            "recommendation": "NO-GO" if engineering_status != "GREEN" else "GO",
+            "confidence": 100,
+            "findings": [check["finding"] for check in checks if check["result"] == "FAILED"],
+            "clarification_counts": {"open": 0, "resolved": 0, "superseded": 0, "rejected": 0},
+            "engineering_result": {
+                "status": engineering_status,
+                "recommendation": "NO-GO" if engineering_status != "GREEN" else "GO",
+                "summary": {
+                    "verified": sum(1 for check in checks if check["result"] == "VERIFIED"),
+                    "failed": sum(1 for check in checks if check["result"] == "FAILED"),
+                    "unable_to_verify": sum(1 for check in checks if check["result"] == "UNABLE_TO_VERIFY"),
+                    "runtime_checks": 0,
+                    "static_checks": len(checks),
+                },
+                "checks": checks,
+            },
+            "governance_result": {
+                "status": "AMBER",
+                "recommendation": "NO-GO",
+                "findings": ["R-001: Required review is pending: architect"],
+            },
+        }
+        (self.workspace / "assurance.json").write_text(json.dumps(assurance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return assurance
+
     def result(self):
         return assure(self.workspace)
 
@@ -240,7 +312,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.6.1", output.getvalue())
+        self.assertIn("Battalion v0.7.0", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -1166,6 +1238,91 @@ class BattalionCliTests(unittest.TestCase):
             output = self.run_cli("dispatch", "--executor", "codex")
         self.assertIn("executor says: build started", output)
         self.assertIn("executor says: build complete", output)
+
+    def test_resolve_requires_assurance_report(self):
+        self.create_engineering_brief()
+        (self.workspace / "assessment.json").write_text(json.dumps({"readiness": "READY"}, indent=2) + "\n", encoding="utf-8")
+        with self.assertRaises(SystemExit) as raised:
+            main(["resolve"], self.cwd)
+        self.assertIn("Run battalion assure", str(raised.exception))
+        self.assertFalse((self.workspace / "resolutions").exists())
+
+    def test_resolve_green_assurance_produces_no_package(self):
+        verified = [{
+            "check_id": "ENG-001",
+            "requirement_id": "R-001",
+            "criterion": "CLI exits successfully",
+            "check_type": "process_exit",
+            "expected": 0,
+            "observed": 0,
+            "evidence": ["tests/test_cli.py"],
+            "result": "VERIFIED",
+            "finding": "R-001: Verified CLI exits successfully.",
+            "recommendation": "No action required.",
+        }]
+        self.create_resolve_context("GREEN", verified)
+        output = self.run_cli("resolve")
+        self.assertIn("No engineering failures require resolution.", output)
+        self.assertFalse((self.workspace / "resolutions").exists())
+
+    def test_resolve_package_contains_only_failed_engineering_findings(self):
+        self.create_resolve_context()
+        output = self.run_cli("resolve")
+        self.assertIn("Mission Resolve package created.", output)
+        self.assertIn("Resolution: RES-001", output)
+        package = self.workspace / "resolutions" / "RES-001"
+        instructions = (package / "instructions.md").read_text(encoding="utf-8")
+        metadata = read_yaml(package / "metadata.yaml")
+        self.assertIn("Battalion Resolve Package", instructions)
+        self.assertIn("Build a command-line utility.", instructions)
+        self.assertIn("Response body status equals Healthy", instructions)
+        self.assertIn('"value": "Healthy"', instructions)
+        self.assertIn('"value": "ok"', instructions)
+        self.assertIn("src/app.ts", instructions)
+        self.assertIn("Correct the implementation.", instructions)
+        self.assertIn("Do not modify the mission.", instructions)
+        self.assertIn("Do not modify acceptance criteria.", instructions)
+        self.assertIn("Do not weaken tests.", instructions)
+        self.assertIn("```markdown\n# Mission", instructions)
+        self.assertNotIn("CLI exits successfully", instructions)
+        self.assertNotIn("Docker image builds successfully", instructions)
+        self.assertNotIn("Required review is pending", instructions)
+        self.assertEqual(metadata["resolution_id"], "RES-001")
+        self.assertEqual(metadata["status"], "PENDING")
+        self.assertEqual(metadata["mission"], "mission.yaml")
+        self.assertEqual(metadata["mission_plan"], "mission-plan.md")
+        self.assertEqual(metadata["assurance_report"], "assurance.json")
+        self.assertEqual(len(metadata["failed_findings"]), 1)
+        self.assertEqual(metadata["failed_findings"][0]["check_id"], "ENG-002")
+
+    def test_resolve_executor_invocation_matches_dispatch(self):
+        self.create_resolve_context()
+        with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess()) as runner:
+            output = self.run_cli("resolve", "--executor", "codex")
+        self.assertIn("Starting executor...", output)
+        self.assertIn("Resolve complete.", output)
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.kwargs["cwd"], self.cwd)
+        self.assertEqual(runner.call_args.args[0][0:2], ["codex", "exec"])
+        self.assertIn("Battalion resolve package", runner.call_args.args[0][-1])
+        metadata = read_yaml(self.workspace / "resolutions" / "RES-001" / "metadata.yaml")
+        self.assertEqual(metadata["executor"], "codex")
+        self.assertEqual(metadata["executor_name"], "Codex")
+        self.assertEqual(metadata["status"], "COMPLETED")
+        self.assertEqual(metadata["return_code"], 0)
+        self.assertEqual(metadata["next_step"], "Run battalion assure after reviewing executor corrections.")
+
+    def test_resolve_package_generation_is_deterministic(self):
+        self.create_resolve_context()
+        self.run_cli("resolve")
+        first = (self.workspace / "resolutions" / "RES-001" / "instructions.md").read_text(encoding="utf-8")
+        first_metadata = read_yaml(self.workspace / "resolutions" / "RES-001" / "metadata.yaml")
+        self.run_cli("resolve")
+        second = (self.workspace / "resolutions" / "RES-002" / "instructions.md").read_text(encoding="utf-8")
+        second_metadata = read_yaml(self.workspace / "resolutions" / "RES-002" / "metadata.yaml")
+        self.assertEqual(first, second)
+        self.assertEqual(first_metadata["failed_findings"], second_metadata["failed_findings"])
+        self.assertEqual(first_metadata["assurance_sha256"], second_metadata["assurance_sha256"])
 
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

@@ -328,6 +328,72 @@ The overall result still uses:
 
 `GO` is impossible unless status is `GREEN`.
 
+### `battalion resolve`
+
+Creates a focused implementation correction package from failed Mission Assurance findings.
+
+```bash
+battalion resolve
+```
+
+Resolve consumes the latest `.battalion/assurance.json` and writes:
+
+```text
+.battalion/resolutions/RES-001/
+```
+
+The package contains:
+
+- `instructions.md`
+- `metadata.yaml`
+
+Resolve includes only `FAILED` engineering checks. It excludes:
+
+- `VERIFIED` checks
+- `UNABLE_TO_VERIFY` checks
+- governance findings
+- pending reviews
+- clarification history
+- audit history
+
+Resolve preserves the original mission, assessment, mission plan, and assurance report reference. It does not reassess, replan, regenerate requirements, modify acceptance criteria, or redefine mission scope.
+
+To hand failed findings to an executor:
+
+```bash
+battalion resolve --executor codex
+battalion resolve --executor claude-code
+battalion resolve --executor copilot
+```
+
+Resolve uses the same executor abstraction and execution modes as Dispatch:
+
+```bash
+battalion resolve --executor codex --mode auto
+```
+
+The correction loop is:
+
+```text
+Init
+↓
+Assess
+↓
+Clarify
+↓
+Plan
+↓
+Dispatch
+↓
+Assure
+↓
+Resolve
+↓
+Assure
+```
+
+Repeat Resolve and Assurance until the Engineering Result is `GREEN`.
+
 ### `battalion report`
 
 Renders the mission report.
