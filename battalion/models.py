@@ -65,6 +65,8 @@ class AssuranceResult:
     confidence: int
     findings: List[str]
     clarification_counts: Dict[str, int] = field(default_factory=dict)
+    engineering_result: Dict[str, Any] = field(default_factory=dict)
+    governance_result: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.recommendation == "GO" and self.status != "GREEN":
@@ -77,4 +79,6 @@ class AssuranceResult:
             "confidence": self.confidence,
             "findings": self.findings,
             "clarification_counts": self.clarification_counts,
+            "engineering_result": self.engineering_result,
+            "governance_result": self.governance_result,
         }

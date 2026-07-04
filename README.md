@@ -278,7 +278,28 @@ Runs Mission Assurance.
 battalion assure
 ```
 
-Assurance validates the mission contract, evidence, required reviews, traceability, and audit trail. It produces:
+Assurance answers:
+
+> Did we build what we agreed to build?
+
+Assurance validates implementation outputs against the engineering contract: mission prompt, mission contract, assessment, mission plan, acceptance criteria, evidence, and produced artifacts. It is deterministic and evidence-based. It does not use AI, infer unstated intent, judge implementation style, or replace human code review.
+
+Assurance writes:
+
+- `.battalion/assurance.json`
+- `.battalion/assurance.md`
+
+Each engineering check returns:
+
+- `VERIFIED`
+- `FAILED`
+- `UNABLE_TO_VERIFY`
+
+`UNABLE_TO_VERIFY` means Battalion could not prove the criterion deterministically from available artifacts or evidence.
+
+Assurance separates engineering-contract findings from governance findings. Engineering findings answer whether the implementation satisfies the contract. Governance findings cover reviews, audit integrity, schema validity, and contract lifecycle state.
+
+The overall result still uses:
 
 - status: `GREEN`, `AMBER`, or `RED`
 - recommendation: `GO` or `NO-GO`

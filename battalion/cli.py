@@ -927,12 +927,43 @@ def assurance(args, cwd):
     result = assure(workspace)
     if (workspace / "events.jsonl").is_file(): append_event(workspace, "assurance_completed", result.to_dict())
     counts = result.clarification_counts
+    engineering = result.engineering_result or {}
+    summary = engineering.get("summary", {})
+    print("Mission Assurance")
+    print(f"\nEngineering Result: {engineering.get('status', result.status)}")
+    print(f"Recommendation: {result.recommendation}")
+    print("\nSummary:")
+    print(f"- Verified: {summary.get('verified', 0)}")
+    print(f"- Failed: {summary.get('failed', 0)}")
+    print(f"- Unable to verify: {summary.get('unable_to_verify', 0)}")
+    for title, state in (("Failed", "FAILED"), ("Unable to verify", "UNABLE_TO_VERIFY")):
+        print(f"\n{title}:")
+        checks = [check for check in engineering.get("checks", []) if check.get("result") == state]
+        if checks:
+            for check in checks:
+                print(f"- {check.get('requirement_id', '—')}: {check.get('finding', '—')}")
+                print(f"  Recommendation: {check.get('recommendation', '—')}")
+        else:
+            print("- None")
+    print("\nGovernance:")
+    print(f"- Result: {result.governance_result.get('status', result.status) if result.governance_result else result.status}")
     print(
-        f"Status: {result.status}\nRecommendation: {result.recommendation}\nConfidence: {result.confidence}\n"
-        f"Clarifications: {counts.get('open', 0)} open, {counts.get('resolved', 0)} resolved, "
-        f"{counts.get('superseded', 0)} superseded, {counts.get('rejected', 0)} rejected\nFindings:"
+        f"- Clarifications: {counts.get('open', 0)} open, {counts.get('resolved', 0)} resolved, "
+        f"{counts.get('superseded', 0)} superseded, {counts.get('rejected', 0)} rejected"
     )
-    for finding in result.findings: print(f"- {finding}")
+    governance_findings = (result.governance_result or {}).get("findings", [])
+    if governance_findings:
+        for finding in governance_findings:
+            print(f"- {finding}")
+    else:
+        print("- None")
+    print("\nOverall:")
+    print(f"- Status: {result.status}")
+    print(f"- Recommendation: {result.recommendation}")
+    print(f"- Confidence: {result.confidence}")
+    print("\nArtifacts:")
+    print(f"- {workspace / 'assurance.json'}")
+    print(f"- {workspace / 'assurance.md'}")
 
 
 def report(args, cwd):
@@ -945,7 +976,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.5.0 deterministic mission assessment, planning, and dispatch")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.6.0 deterministic mission assessment, planning, dispatch, and assurance")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")

@@ -89,6 +89,32 @@ class BattalionCliTests(unittest.TestCase):
             review["status"] = "completed"
         write_yaml(self.ledger_path, ledger)
 
+    def write_assurance_contract(self, acceptance, evidence=None, review_status="pending", requirement_status="completed"):
+        self.initialize_with_prompt("Build a production-ready REST API with GET /v1/health returning status Healthy.")
+        evidence = evidence or []
+        ledger = read_yaml(self.ledger_path)
+        ledger["requirements"] = [{
+            "id": "R-001",
+            "statement": "Implement health endpoint",
+            "status": requirement_status,
+            "owner": "developer",
+            "acceptance": acceptance,
+            "evidence": evidence,
+            "assumptions": [],
+            "risks": [],
+            "required_reviews": [
+                {"reviewer": "architect", "status": review_status},
+                {"reviewer": "tester", "status": review_status},
+            ],
+        }]
+        write_yaml(self.ledger_path, ledger)
+        (self.workspace / "assessment.json").write_text(json.dumps({
+            "schema_version": "battalion.assessment.v2",
+            "readiness": "READY",
+            "mission_attributes": ["REST_API", "HTTP_ENDPOINT"],
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (self.workspace / "mission-plan.md").write_text("# Mission\n\n## Evidence Required\n\n- Health response evidence\n", encoding="utf-8")
+
     def create_engineering_brief(self, architecture_references=None):
         architecture_references = architecture_references or []
         self.initialize_with_prompt("Build a command-line utility.")
@@ -201,7 +227,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.5.0", output.getvalue())
+        self.assertIn("Battalion v0.6.0", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -1593,6 +1619,71 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(result.status, "RED")
         self.assertTrue(any("wrong mission_id" in finding for finding in result.findings))
         self.assertIn("Mission: Audit trail is missing mission_initialized event", result.findings)
+
+    def test_assurance_generates_json_and_markdown_artifacts(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "Healthy", "timestamp": "2026-07-03T02:44:00.284Z"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "completed")
+        output = self.run_cli("assure")
+        self.assertTrue((self.workspace / "assurance.json").is_file())
+        self.assertTrue((self.workspace / "assurance.md").is_file())
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["engineering_result"]["status"], "GREEN")
+        self.assertEqual(data["engineering_result"]["checks"][0]["result"], "VERIFIED")
+        self.assertIn("Mission Assurance", (self.workspace / "assurance.md").read_text(encoding="utf-8"))
+        self.assertIn("Engineering Result: GREEN", output)
+        self.assertIn("Artifacts:", output)
+
+    def test_assurance_health_endpoint_status_mismatch_is_engineering_red(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "ok", "timestamp": "2026-07-03T02:44:00.284Z"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "pending")
+        result = self.result()
+        self.assertEqual((result.status, result.recommendation), ("RED", "NO-GO"))
+        self.assertEqual(result.engineering_result["status"], "RED")
+        self.assertEqual(result.governance_result["status"], "AMBER")
+        failed = [check for check in result.engineering_result["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+        self.assertIn('Expected response status field "Healthy"; observed "ok".', failed[0]["finding"])
+        self.assertIn("Update implementation or tests", failed[0]["recommendation"])
+        self.assertTrue(any("Required review is pending" in finding for finding in result.governance_result["findings"]))
+
+    def test_assurance_unable_to_verify_without_evidence_is_amber(self):
+        self.write_assurance_contract(["Structured logging behavior is enabled"], [], "completed", "planned")
+        result = self.result()
+        self.assertEqual((result.status, result.recommendation), ("AMBER", "NO-GO"))
+        self.assertEqual(result.engineering_result["status"], "AMBER")
+        self.assertEqual(result.engineering_result["summary"]["unable_to_verify"], 1)
+        check = result.engineering_result["checks"][0]
+        self.assertEqual(check["result"], "UNABLE_TO_VERIFY")
+        self.assertIn("Unable to verify acceptance criterion", check["finding"])
+
+    def test_assurance_engineering_findings_precede_governance_findings_in_cli(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "ok"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "pending")
+        output = self.run_cli("assure")
+        self.assertLess(output.index("Failed:"), output.index("Governance:"))
+        self.assertIn('Expected response status field "Healthy"; observed "ok".', output)
+        self.assertIn("Required review is pending", output)
+
+    def test_assurance_engineering_result_is_deterministic(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "ok"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "pending")
+        first = self.result().to_dict()
+        second = self.result().to_dict()
+        self.assertEqual(first["engineering_result"], second["engineering_result"])
+        first_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.result()
+        second_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.assertEqual(first_json["engineering_result"], second_json["engineering_result"])
 
     def test_green_succeeds_for_complete_contract(self):
         self.initialize()

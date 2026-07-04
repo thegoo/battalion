@@ -9,6 +9,23 @@ All notable Battalion changes are summarized here. Product usage documentation l
 - Rewrote `README.md` as product documentation rather than implementation history.
 - Moved release and slice summaries into `CHANGELOG.md`.
 
+## v0.6.0 — Mission Assurance MVP
+
+### Added
+
+- Added engineering-contract assurance as the primary Mission Assurance output.
+- Added per-acceptance-criterion assurance checks with `VERIFIED`, `FAILED`, and `UNABLE_TO_VERIFY` results.
+- Added canonical `.battalion/assurance.json` output.
+- Added human-readable `.battalion/assurance.md` output.
+- Added deterministic observable checks for static evidence, response-body literals, endpoint references, HTTP 200 evidence, timestamps, Docker evidence, and test artifacts.
+- Added health endpoint mismatch coverage where the contract requires `status = Healthy` and implementation evidence returns `status = ok`.
+
+### Changed
+
+- Separated engineering findings from governance findings.
+- Overall assurance status is derived from engineering failures first, while preserving governance validation.
+- CLI assurance output now prioritizes actionable engineering findings before governance findings.
+
 ## v0.5.0 — Dispatch MVP
 
 ### Added

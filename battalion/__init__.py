@@ -1,3 +1,3 @@
-"""Battalion v0.5.0 deterministic mission assessment, planning, and dispatch."""
+"""Battalion v0.6.0 deterministic mission assessment, planning, dispatch, and assurance."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -359,7 +360,340 @@ def _validate_clarifications(values, mission_prompt, constraint_ids):
     return red, amber, counts
 
 
-def assure(workspace: Path) -> AssuranceResult:
+ENGINEERING_RESULTS = ("VERIFIED", "FAILED", "UNABLE_TO_VERIFY")
+
+
+def _project_files(workspace):
+    project = workspace.parent
+    result = []
+    for path in sorted(project.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            relative = path.relative_to(project)
+        except ValueError:
+            continue
+        if relative.parts and relative.parts[0] == ".battalion":
+            continue
+        if any(part in {"node_modules", ".git", ".venv", "__pycache__"} for part in relative.parts):
+            continue
+        result.append((relative.as_posix(), path))
+    return result
+
+
+def _read_text(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _evidence_paths(workspace, requirement):
+    paths = []
+    project = workspace.parent.resolve()
+    for reference in requirement.get("evidence", []) if isinstance(requirement.get("evidence"), list) else []:
+        if not _is_text(reference):
+            continue
+        candidate = (project / reference).resolve()
+        try:
+            candidate.relative_to(project)
+        except ValueError:
+            continue
+        paths.append((reference, candidate))
+    return paths
+
+
+def _existing_evidence(workspace, requirement):
+    return [(reference, path) for reference, path in _evidence_paths(workspace, requirement) if path.is_file()]
+
+
+def _all_text_sources(workspace, requirement):
+    sources = []
+    for reference, path in _existing_evidence(workspace, requirement):
+        text = _read_text(path)
+        if text:
+            sources.append((reference, text))
+    for reference, path in _project_files(workspace):
+        text = _read_text(path)
+        if text:
+            sources.append((reference, text))
+    return sources
+
+
+def _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, result, finding, recommendation):
+    if result not in ENGINEERING_RESULTS:
+        raise ValueError(f"invalid engineering assurance result: {result}")
+    return {
+        "check_id": check_id,
+        "requirement_id": requirement_id,
+        "criterion": criterion,
+        "check_type": check_type,
+        "expected": expected,
+        "observed": observed,
+        "evidence": evidence,
+        "result": result,
+        "finding": finding,
+        "recommendation": recommendation,
+    }
+
+
+def _extract_expected_status_value(criterion):
+    patterns = (
+        r'status\s+(?:field\s+)?(?:equals|should equal|should be|is|=)\s+["\']?([A-Za-z0-9_.:-]+)["\']?',
+        r'["\']status["\']\s*[:=]\s*["\']([^"\']+)["\']',
+        r'status\s+(?!code\b)["\']?([A-Za-z][A-Za-z0-9_.:-]+)["\']?',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, criterion, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _observed_status_value(workspace, requirement):
+    for reference, text in _all_text_sources(workspace, requirement):
+        for pattern in (r'"status"\s*:\s*"([^"]+)"', r"'status'\s*:\s*'([^']+)'", r"\bstatus\s*[:=]\s*([A-Za-z0-9_.:-]+)"):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1), reference
+    return None, None
+
+
+def _extract_endpoint(criterion):
+    match = re.search(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./{}:-]*)", criterion)
+    if match:
+        return match.group(1)
+    match = re.search(r"endpoint\s+(/[A-Za-z0-9_./{}:-]*)", criterion, flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _contains_in_sources(workspace, requirement, value):
+    for reference, text in _all_text_sources(workspace, requirement):
+        if value in text:
+            return reference
+    return None
+
+
+def _timestamp_observation(workspace, requirement):
+    for reference, text in _all_text_sources(workspace, requirement):
+        match = re.search(r'"timestamp"\s*:\s*"([^"]+)"', text, flags=re.IGNORECASE)
+        if match:
+            value = match.group(1)
+            return value, reference, _is_timestamp(value)
+    return None, None, False
+
+
+def _test_files(project):
+    return [
+        reference for reference, path in _project_files(project / ".battalion")
+        if re.search(r"(^|/)(tests?|specs?)(/|$)", reference, flags=re.IGNORECASE)
+        or re.search(r"(test|spec)\.[A-Za-z0-9]+$", reference, flags=re.IGNORECASE)
+    ]
+
+
+def _engineering_check_for_criterion(workspace, requirement, criterion, check_number):
+    requirement_id = requirement.get("id") if _is_text(requirement.get("id")) else "UNKNOWN"
+    check_id = f"ENG-{check_number:03d}"
+    existing_evidence = _existing_evidence(workspace, requirement)
+    criterion_lower = criterion.lower()
+
+    expected_status = _extract_expected_status_value(criterion)
+    if expected_status:
+        observed, source = _observed_status_value(workspace, requirement)
+        if observed is None:
+            return _check(
+                check_id, requirement_id, criterion, "response_body_literal",
+                {"field": "status", "value": expected_status}, None, [],
+                "UNABLE_TO_VERIFY",
+                f"{requirement_id}: Unable to verify status field equals {expected_status}; no deterministic response evidence was found.",
+                "Provide response evidence or run a supported validation mode.",
+            )
+        if observed == expected_status:
+            return _check(
+                check_id, requirement_id, criterion, "response_body_literal",
+                {"field": "status", "value": expected_status}, {"field": "status", "value": observed}, [source],
+                "VERIFIED",
+                f"{requirement_id}: Verified status field equals {expected_status}.",
+                "No action required.",
+            )
+        return _check(
+            check_id, requirement_id, criterion, "response_body_literal",
+            {"field": "status", "value": expected_status}, {"field": "status", "value": observed}, [source],
+            "FAILED",
+            f'{requirement_id}: Expected response status field "{expected_status}"; observed "{observed}".',
+            "Update implementation or tests to satisfy the response contract.",
+        )
+
+    endpoint = _extract_endpoint(criterion)
+    if endpoint:
+        source = _contains_in_sources(workspace, requirement, endpoint)
+        if source:
+            result = "VERIFIED"
+            finding = f"{requirement_id}: Verified endpoint reference {endpoint}."
+            recommendation = "No action required."
+            evidence = [source]
+        elif existing_evidence:
+            result = "VERIFIED"
+            finding = f"{requirement_id}: Verified recorded evidence exists for endpoint {endpoint}."
+            recommendation = "No action required."
+            evidence = [reference for reference, _ in existing_evidence]
+        else:
+            result = "UNABLE_TO_VERIFY"
+            finding = f"{requirement_id}: Unable to verify endpoint path {endpoint}; no deterministic artifact references it."
+            recommendation = "Provide implementation or response evidence for the endpoint."
+            evidence = []
+        return _check(check_id, requirement_id, criterion, "endpoint_path", endpoint, endpoint if source else None, evidence, result, finding, recommendation)
+
+    if "http 200" in criterion_lower or "status code 200" in criterion_lower:
+        source = None
+        for reference, text in _all_text_sources(workspace, requirement):
+            if re.search(r"\b200\b", text):
+                source = reference
+                break
+        if source:
+            return _check(check_id, requirement_id, criterion, "http_status", 200, 200, [source], "VERIFIED", f"{requirement_id}: Verified HTTP 200 evidence.", "No action required.")
+        if existing_evidence:
+            evidence = [reference for reference, _ in existing_evidence]
+            return _check(check_id, requirement_id, criterion, "http_status", 200, evidence, evidence, "VERIFIED", f"{requirement_id}: Verified recorded evidence exists for HTTP 200 criterion.", "No action required.")
+        return _check(check_id, requirement_id, criterion, "http_status", 200, None, [], "UNABLE_TO_VERIFY", f"{requirement_id}: Unable to verify HTTP 200 without response or test evidence.", "Provide HTTP response or passing test evidence.")
+
+    if "timestamp" in criterion_lower:
+        value, source, valid = _timestamp_observation(workspace, requirement)
+        if value is None:
+            if existing_evidence:
+                evidence = [reference for reference, _ in existing_evidence]
+                return _check(check_id, requirement_id, criterion, "timestamp", "timestamp evidence exists", evidence, evidence, "VERIFIED", f"{requirement_id}: Verified recorded evidence exists for timestamp criterion.", "No action required.")
+            return _check(check_id, requirement_id, criterion, "timestamp", "timestamp present", None, [], "UNABLE_TO_VERIFY", f"{requirement_id}: Unable to verify timestamp without response evidence.", "Provide response evidence containing the timestamp.")
+        if valid:
+            return _check(check_id, requirement_id, criterion, "timestamp", "ISO-8601 timestamp", value, [source], "VERIFIED", f"{requirement_id}: Verified timestamp is parseable.", "No action required.")
+        if value is not None:
+            return _check(check_id, requirement_id, criterion, "timestamp", "ISO-8601 timestamp", value, [source], "FAILED", f"{requirement_id}: Timestamp is not parseable as ISO-8601: {value}.", "Return timestamp in the required format.")
+
+    if "dockerfile" in criterion_lower or "docker" in criterion_lower:
+        dockerfile = workspace.parent / "Dockerfile"
+        if dockerfile.is_file():
+            return _check(check_id, requirement_id, criterion, "file_exists", "Dockerfile exists", "Dockerfile exists", ["Dockerfile"], "VERIFIED", f"{requirement_id}: Verified Dockerfile exists.", "No action required.")
+        if existing_evidence:
+            evidence = [reference for reference, _ in existing_evidence]
+            return _check(check_id, requirement_id, criterion, "file_exists", "Dockerfile or validation evidence exists", evidence, evidence, "VERIFIED", f"{requirement_id}: Verified recorded evidence exists for Docker criterion.", "No action required.")
+        return _check(check_id, requirement_id, criterion, "file_exists", "Dockerfile exists", None, [], "UNABLE_TO_VERIFY", f"{requirement_id}: Unable to verify Dockerfile requirement without Dockerfile or recorded evidence.", "Add a Dockerfile or provide validation evidence.")
+
+    if "test" in criterion_lower:
+        tests = _test_files(workspace.parent)
+        if tests:
+            return _check(check_id, requirement_id, criterion, "test_artifacts", "test files exist", tests, tests, "VERIFIED", f"{requirement_id}: Verified test artifact exists.", "No action required.")
+        if existing_evidence:
+            evidence = [reference for reference, _ in existing_evidence]
+            return _check(check_id, requirement_id, criterion, "test_evidence", "test evidence exists", evidence, evidence, "VERIFIED", f"{requirement_id}: Verified recorded test evidence exists.", "No action required.")
+        return _check(check_id, requirement_id, criterion, "test_artifacts", "test evidence exists", None, [], "UNABLE_TO_VERIFY", f"{requirement_id}: Unable to verify tests without test files or recorded evidence.", "Provide test files or passing test output evidence.")
+
+    if existing_evidence:
+        evidence = [reference for reference, _ in existing_evidence]
+        return _check(
+            check_id, requirement_id, criterion, "recorded_evidence",
+            "evidence exists", evidence, evidence,
+            "VERIFIED",
+            f"{requirement_id}: Verified recorded evidence exists for acceptance criterion.",
+            "No action required.",
+        )
+    return _check(
+        check_id, requirement_id, criterion, "recorded_evidence",
+        "evidence exists", None, [],
+        "UNABLE_TO_VERIFY",
+        f"{requirement_id}: Unable to verify acceptance criterion without deterministic evidence.",
+        "Provide implementation, test, or documented validation evidence.",
+    )
+
+
+def _engineering_assurance(workspace, requirements):
+    checks = []
+    check_number = 1
+    requirements = requirements or []
+    if not requirements:
+        return {"status": "AMBER", "recommendation": "NO-GO", "checks": [], "summary": {"verified": 0, "failed": 0, "unable_to_verify": 0}}
+
+    for requirement in requirements:
+        if not isinstance(requirement, dict):
+            continue
+        acceptance = requirement.get("acceptance", [])
+        if not isinstance(acceptance, list):
+            continue
+        for criterion in acceptance:
+            if not _is_text(criterion):
+                continue
+            checks.append(_engineering_check_for_criterion(workspace, requirement, criterion, check_number))
+            check_number += 1
+
+    summary = {
+        "verified": sum(1 for check in checks if check["result"] == "VERIFIED"),
+        "failed": sum(1 for check in checks if check["result"] == "FAILED"),
+        "unable_to_verify": sum(1 for check in checks if check["result"] == "UNABLE_TO_VERIFY"),
+    }
+    if summary["failed"]:
+        status = "RED"
+    elif summary["unable_to_verify"] or not checks:
+        status = "AMBER"
+    else:
+        status = "GREEN"
+    return {"status": status, "recommendation": "GO" if status == "GREEN" else "NO-GO", "checks": checks, "summary": summary}
+
+
+def _latest_dispatch_metadata(workspace):
+    dispatch_root = workspace / "dispatches"
+    if not dispatch_root.is_dir():
+        return None
+    candidates = sorted(path for path in dispatch_root.iterdir() if path.is_dir() and (path / "metadata.yaml").is_file())
+    if not candidates:
+        return None
+    try:
+        return read_yaml(candidates[-1] / "metadata.yaml")
+    except ValueError:
+        return None
+
+
+def _write_assurance_artifacts(workspace, result):
+    data = result.to_dict()
+    data["latest_dispatch"] = _latest_dispatch_metadata(workspace)
+    (workspace / "assurance.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lines = [
+        "# Mission Assurance",
+        "",
+        f"Engineering Result: {result.engineering_result.get('status', 'UNKNOWN')}",
+        f"Governance Result: {result.governance_result.get('status', 'UNKNOWN')}",
+        f"Overall Status: {result.status}",
+        f"Recommendation: {result.recommendation}",
+        "",
+        "## Engineering Summary",
+        "",
+        f"- Verified: {result.engineering_result.get('summary', {}).get('verified', 0)}",
+        f"- Failed: {result.engineering_result.get('summary', {}).get('failed', 0)}",
+        f"- Unable to verify: {result.engineering_result.get('summary', {}).get('unable_to_verify', 0)}",
+        "",
+    ]
+    failed = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "FAILED"]
+    unable = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "UNABLE_TO_VERIFY"]
+    verified = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "VERIFIED"]
+    for title, values in (("Failed", failed), ("Unable to verify", unable), ("Verified", verified)):
+        lines.extend([f"## {title}", ""])
+        if values:
+            for check in values:
+                lines.append(f"- {check['requirement_id']}: {check['finding']}")
+                if check.get("evidence"):
+                    lines.append(f"  - Evidence: {', '.join(str(item) for item in check['evidence'])}")
+                lines.append(f"  - Recommendation: {check['recommendation']}")
+        else:
+            lines.append("- None")
+        lines.append("")
+    lines.extend(["## Governance", ""])
+    governance_findings = result.governance_result.get("findings", [])
+    if governance_findings:
+        lines.extend(f"- {finding}" for finding in governance_findings)
+    else:
+        lines.append("- None")
+    (workspace / "assurance.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _governance_assure(workspace: Path) -> AssuranceResult:
     red_findings = []
     amber_findings = []
     clarification_counts = {status: 0 for status in CLARIFICATION_STATUSES}
@@ -450,3 +784,52 @@ def assure(workspace: Path) -> AssuranceResult:
     if amber_findings:
         return AssuranceResult("AMBER", "NO-GO", 100, amber_findings, clarification_counts)
     return AssuranceResult("GREEN", "GO", 100, ["Mission contract satisfied: all requirements are closed with acceptance criteria, verifiable evidence, completed reviews, and a valid audit trail"], clarification_counts)
+
+
+def assure(workspace: Path) -> AssuranceResult:
+    governance = _governance_assure(workspace)
+    requirements = []
+    try:
+        ledger = read_yaml(workspace / "ledger.yaml")
+        if isinstance(ledger, dict) and isinstance(ledger.get("requirements"), list):
+            requirements = ledger["requirements"]
+    except ValueError:
+        requirements = []
+
+    engineering = _engineering_assurance(workspace, requirements)
+    if engineering["status"] == "RED":
+        overall_status = "RED"
+    elif governance.status == "RED":
+        overall_status = "RED"
+    elif engineering["status"] == "AMBER" or governance.status == "AMBER":
+        overall_status = "AMBER"
+    else:
+        overall_status = "GREEN"
+    recommendation = "GO" if overall_status == "GREEN" else "NO-GO"
+
+    engineering_findings = [
+        check["finding"] for check in engineering["checks"]
+        if check["result"] in {"FAILED", "UNABLE_TO_VERIFY"}
+    ]
+    if not engineering_findings and engineering["status"] == "GREEN":
+        engineering_findings = ["Engineering contract satisfied: all acceptance criteria are verified by deterministic evidence."]
+    findings = []
+    findings.extend(engineering_findings)
+    findings.extend(governance.findings)
+
+    result = AssuranceResult(
+        overall_status,
+        recommendation,
+        100,
+        findings,
+        governance.clarification_counts,
+        engineering_result=engineering,
+        governance_result={
+            "status": governance.status,
+            "recommendation": governance.recommendation,
+            "findings": governance.findings,
+        },
+    )
+    if workspace.is_dir():
+        _write_assurance_artifacts(workspace, result)
+    return result
