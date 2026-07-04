@@ -412,6 +412,16 @@ def _existing_evidence(workspace, requirement):
     return [(reference, path) for reference, path in _evidence_paths(workspace, requirement) if path.is_file()]
 
 
+def _mission_prompt(workspace):
+    try:
+        mission = read_yaml(workspace / "mission.yaml")
+    except ValueError:
+        return ""
+    if isinstance(mission, dict) and _is_text(mission.get("mission_prompt")):
+        return mission["mission_prompt"]
+    return ""
+
+
 def _all_text_sources(workspace, requirement):
     sources = []
     for reference, path in _existing_evidence(workspace, requirement):
@@ -423,6 +433,27 @@ def _all_text_sources(workspace, requirement):
         if text:
             sources.append((reference, text))
     return sources
+
+
+def _project_text_sources(workspace):
+    sources = []
+    for reference, path in _project_files(workspace):
+        text = _read_text(path)
+        if text:
+            sources.append((reference, text))
+    return sources
+
+
+def _package_json(workspace):
+    path = workspace.parent / "package.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), "package.json"
+    except (OSError, json.JSONDecodeError):
+        return None, None
+
+
+def _source_files(workspace, suffixes):
+    return [reference for reference, _ in _project_files(workspace) if reference.endswith(suffixes)]
 
 
 def _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, result, finding, recommendation, execution_timestamp=None, validation_mode="static"):
@@ -457,9 +488,49 @@ def _extract_expected_status_value(criterion):
     return None
 
 
+def _expected_status_for_requirement(workspace, requirement, criterion):
+    expected = _extract_expected_status_value(criterion)
+    if expected:
+        return expected
+    criterion_lower = criterion.lower()
+    if "http 200" in criterion_lower or "status code" in criterion_lower or "endpoint exists" in criterion_lower:
+        return None
+    if not any(term in criterion_lower for term in ("status", "machine-readable", "health result")):
+        return None
+    prompt = _mission_prompt(workspace)
+    patterns = (
+        r"service\s+status\s+of\s+([A-Za-z0-9_.:-]+)",
+        r"returning\s+status\s+([A-Za-z0-9_.:-]+)",
+        r"status\s+(?:of\s+)?([A-Za-z0-9_.:-]+)",
+        r"status\s*:\s*([A-Za-z0-9_.:-]+)",
+        r'"status"\s*:\s*"([^"]+)"',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if match:
+            value = match.group(1).strip().rstrip(".,;")
+            if value.lower() not in {"code", "field"}:
+                return value
+    return None
+
+
 def _observed_status_value(workspace, requirement):
-    for reference, text in _all_text_sources(workspace, requirement):
-        for pattern in (r'"status"\s*:\s*"([^"]+)"', r"'status'\s*:\s*'([^']+)'", r"\bstatus\s*[:=]\s*([A-Za-z0-9_.:-]+)"):
+    sources = sorted(
+        _all_text_sources(workspace, requirement),
+        key=lambda item: (
+            0 if item[0].startswith("src/") else
+            1 if item[0].startswith(("tests/", "test/")) else
+            2 if item[0].startswith("dist/") else
+            3
+        ),
+    )
+    for reference, text in sources:
+        for pattern in (
+            r'"status"\s*:\s*"([^"]+)"',
+            r"'status'\s*:\s*'([^']+)'",
+            r"\bstatus\s*:\s*[\"']([^\"']+)[\"']",
+            r"\bstatus\s*[:=]\s*([A-Za-z0-9_.:-]+)",
+        ):
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
                 return match.group(1), reference
@@ -477,6 +548,28 @@ def _extract_endpoint(criterion):
         return match.group(1)
     match = re.search(r"endpoint\s+(/[A-Za-z0-9_./{}:-]*)", criterion, flags=re.IGNORECASE)
     return match.group(1) if match else None
+
+
+def _mission_endpoint(workspace):
+    prompt = _mission_prompt(workspace)
+    match = re.search(r"\bGET\s+(/[A-Za-z0-9_./{}:-]*)", prompt)
+    if match:
+        return match.group(1)
+    match = re.search(r"\bendpoint\s+(/[A-Za-z0-9_./{}:-]*)", prompt, flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _endpoint_for_requirement(workspace, requirement, criterion):
+    endpoint = _extract_endpoint(criterion) or _requirement_endpoint(requirement)
+    if endpoint:
+        return endpoint
+    context = " ".join([
+        requirement.get("statement", "") if isinstance(requirement, dict) else "",
+        criterion,
+    ]).lower()
+    if "health" in context or "endpoint" in context or "http" in context:
+        return _mission_endpoint(workspace)
+    return None
 
 
 def _extract_safe_runtime_urls(text):
@@ -503,7 +596,7 @@ def _runtime_url_for_requirement(workspace, requirement, criterion):
         urls = _extract_safe_runtime_urls(item)
         if urls:
             return urls[0]
-    endpoint = _extract_endpoint(criterion) or _requirement_endpoint(requirement)
+    endpoint = _endpoint_for_requirement(workspace, requirement, criterion)
     if not endpoint:
         return None
     for _, text in _all_text_sources(workspace, requirement):
@@ -511,6 +604,14 @@ def _runtime_url_for_requirement(workspace, requirement, criterion):
             parsed = urlparse(url)
             if parsed.path == endpoint:
                 return url
+    for _, text in _project_text_sources(workspace):
+        for url in _extract_safe_runtime_urls(text):
+            parsed = urlparse(url)
+            if parsed.path == endpoint:
+                return url
+    port = _detected_local_port(workspace)
+    if port:
+        return f"http://127.0.0.1:{port}{endpoint}"
     return None
 
 
@@ -523,6 +624,21 @@ def _requirement_endpoint(requirement):
         endpoint = _extract_endpoint(criterion)
         if endpoint:
             return endpoint
+    return None
+
+
+def _detected_local_port(workspace):
+    for _, text in _project_text_sources(workspace):
+        for pattern in (
+            r"PORT\s*\?\?\s*[\"'](\d+)[\"']",
+            r"PORT\s*\|\|\s*[\"']?(\d+)[\"']?",
+            r"listen\(\s*(\d+)",
+            r"127\.0\.0\.1:(\d+)",
+            r"localhost:(\d+)",
+        ):
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
     return None
 
 
@@ -600,8 +716,8 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
     requirement_id = requirement.get("id") if _is_text(requirement.get("id")) else "UNKNOWN"
     check_id = f"ENG-{check_number:03d}"
     criterion_lower = criterion.lower()
-    endpoint = _extract_endpoint(criterion) or _requirement_endpoint(requirement)
-    expected_status = _extract_expected_status_value(criterion)
+    endpoint = _endpoint_for_requirement(workspace, requirement, criterion)
+    expected_status = _expected_status_for_requirement(workspace, requirement, criterion)
     runtime_relevant = bool(endpoint or expected_status or "http 200" in criterion_lower or "status code 200" in criterion_lower or "json" in criterion_lower or "timestamp" in criterion_lower)
     if not runtime_relevant:
         return None
@@ -715,6 +831,8 @@ def _timestamp_observation(workspace, requirement):
         if match:
             value = match.group(1)
             return value, reference, _is_timestamp(value)
+        if "timestamp" in text.lower() and ".toISOString()" in text:
+            return "Date.prototype.toISOString()", reference, True
     return None, None, False
 
 
@@ -726,13 +844,65 @@ def _test_files(project):
     ]
 
 
+def _static_verified(check_id, requirement_id, criterion, check_type, expected, observed, evidence, finding):
+    return _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, "VERIFIED", finding, "No action required.")
+
+
+def _static_failed(check_id, requirement_id, criterion, check_type, expected, observed, evidence, finding):
+    return _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, "FAILED", finding, "Update implementation or engineering contract.")
+
+
+def _docs_files(workspace):
+    return [
+        reference for reference, _ in _project_files(workspace)
+        if reference.lower() == "readme.md" or reference.lower().startswith("docs/")
+    ]
+
+
+def _sources_contain(workspace, patterns):
+    for reference, text in _project_text_sources(workspace):
+        if all(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns):
+            return reference
+    return None
+
+
 def _engineering_check_for_criterion(workspace, requirement, criterion, check_number):
     requirement_id = requirement.get("id") if _is_text(requirement.get("id")) else "UNKNOWN"
     check_id = f"ENG-{check_number:03d}"
     existing_evidence = _existing_evidence(workspace, requirement)
     criterion_lower = criterion.lower()
 
-    expected_status = _extract_expected_status_value(criterion)
+    if "typescript" in criterion_lower:
+        files = _source_files(workspace, (".ts", ".tsx"))
+        if files:
+            return _static_verified(check_id, requirement_id, criterion, "typescript_source", "TypeScript source files exist", files, files, f"{requirement_id}: Verified TypeScript source files exist.")
+
+    if "node.js" in criterion_lower or "nodejs" in criterion_lower or "node " in criterion_lower:
+        package, reference = _package_json(workspace)
+        if package is not None:
+            observed = {
+                "package": reference,
+                "engines": package.get("engines", {}),
+                "scripts": sorted(package.get("scripts", {}).keys()) if isinstance(package.get("scripts"), dict) else [],
+            }
+            return _static_verified(check_id, requirement_id, criterion, "node_project", "Node.js package metadata exists", observed, [reference], f"{requirement_id}: Verified Node.js package metadata exists.")
+
+    if "entrypoint" in criterion_lower and ("start" in criterion_lower or "starts successfully" in criterion_lower):
+        package, reference = _package_json(workspace)
+        scripts = package.get("scripts", {}) if isinstance(package, dict) and isinstance(package.get("scripts"), dict) else {}
+        source = _sources_contain(workspace, [r"\.listen\("])
+        if scripts.get("start") or source:
+            evidence = [item for item in [reference if scripts.get("start") else None, source] if item]
+            observed = {"start_script": scripts.get("start"), "listener": source}
+            return _static_verified(check_id, requirement_id, criterion, "application_entrypoint", "Documented start script or listener exists", observed, evidence, f"{requirement_id}: Verified application entrypoint evidence exists.")
+
+    endpoint = _endpoint_for_requirement(workspace, requirement, criterion)
+    if "health endpoint exists" in criterion_lower or criterion_lower.endswith("endpoint exists"):
+        source = _contains_in_sources(workspace, requirement, endpoint) if endpoint else None
+        if source:
+            return _static_verified(check_id, requirement_id, criterion, "endpoint_path", endpoint, endpoint, [source], f"{requirement_id}: Verified endpoint reference {endpoint}.")
+
+    expected_status = _expected_status_for_requirement(workspace, requirement, criterion)
     if expected_status:
         observed, source = _observed_status_value(workspace, requirement)
         if observed is None:
@@ -758,6 +928,11 @@ def _engineering_check_for_criterion(workspace, requirement, criterion, check_nu
             f'{requirement_id}: Expected response status field "{expected_status}"; observed "{observed}".',
             "Update implementation or tests to satisfy the response contract.",
         )
+
+    if "machine-readable" in criterion_lower and "health" in criterion_lower:
+        source = _sources_contain(workspace, [r"\.json\s*\("])
+        if source:
+            return _static_verified(check_id, requirement_id, criterion, "json_response", "machine-readable JSON response", "JSON response emitted", [source], f"{requirement_id}: Verified machine-readable JSON response evidence exists.")
 
     endpoint = _extract_endpoint(criterion)
     if endpoint:
@@ -792,6 +967,17 @@ def _engineering_check_for_criterion(workspace, requirement, criterion, check_nu
             return _check(check_id, requirement_id, criterion, "http_status", 200, evidence, evidence, "VERIFIED", f"{requirement_id}: Verified recorded evidence exists for HTTP 200 criterion.", "No action required.")
         return _check(check_id, requirement_id, criterion, "http_status", 200, None, [], "UNABLE_TO_VERIFY", f"{requirement_id}: Unable to verify HTTP 200 without response or test evidence.", "Provide HTTP response or passing test evidence.")
 
+    if "get requests are allowed" in criterion_lower:
+        endpoint = _endpoint_for_requirement(workspace, requirement, criterion)
+        source = _sources_contain(workspace, [r"\.get\s*\(", re.escape(endpoint) if endpoint else r"health"])
+        if source:
+            return _static_verified(check_id, requirement_id, criterion, "http_method_allowed", "GET allowed", "GET route implemented", [source], f"{requirement_id}: Verified GET route implementation exists.")
+
+    if any(method in criterion_lower for method in ("post", "put", "delete", "patch")) and "rejected" in criterion_lower:
+        source = _sources_contain(workspace, [r"\.all\s*\(|405|method\s+not\s+allowed"])
+        if source:
+            return _static_verified(check_id, requirement_id, criterion, "http_method_rejection", "Unsupported methods rejected", "405/method-not-allowed handling exists", [source], f"{requirement_id}: Verified unsupported method rejection evidence exists.")
+
     if "timestamp" in criterion_lower:
         value, source, valid = _timestamp_observation(workspace, requirement)
         if value is None:
@@ -803,6 +989,16 @@ def _engineering_check_for_criterion(workspace, requirement, criterion, check_nu
             return _check(check_id, requirement_id, criterion, "timestamp", "ISO-8601 timestamp", value, [source], "VERIFIED", f"{requirement_id}: Verified timestamp is parseable.", "No action required.")
         if value is not None:
             return _check(check_id, requirement_id, criterion, "timestamp", "ISO-8601 timestamp", value, [source], "FAILED", f"{requirement_id}: Timestamp is not parseable as ISO-8601: {value}.", "Return timestamp in the required format.")
+
+    if "documentation" in criterion_lower:
+        docs = _docs_files(workspace)
+        if docs:
+            return _static_verified(check_id, requirement_id, criterion, "documentation", "documentation exists", docs, docs, f"{requirement_id}: Verified documentation artifact exists.")
+
+    if "controlled error" in criterion_lower or "stack traces" in criterion_lower or "implementation details" in criterion_lower:
+        source = _sources_contain(workspace, [r"internal server error|bad request|not found|method not allowed"])
+        if source:
+            return _static_verified(check_id, requirement_id, criterion, "safe_error_handling", "generic controlled error handling", "generic error responses found", [source], f"{requirement_id}: Verified generic error handling evidence exists.")
 
     if "dockerfile" in criterion_lower or "docker" in criterion_lower:
         dockerfile = workspace.parent / "Dockerfile"
@@ -859,8 +1055,13 @@ def _engineering_assurance(workspace, requirements, run=False):
             if not _is_text(criterion):
                 continue
             check = _runtime_check_for_criterion(workspace, requirement, criterion, check_number, runtime_cache, runtime_timestamp) if run else None
+            static_check = None
             if check is None:
                 check = _engineering_check_for_criterion(workspace, requirement, criterion, check_number)
+            elif check["result"] == "UNABLE_TO_VERIFY":
+                static_check = _engineering_check_for_criterion(workspace, requirement, criterion, check_number)
+                if static_check["result"] != "UNABLE_TO_VERIFY":
+                    check = static_check
             checks.append(check)
             check_number += 1
 

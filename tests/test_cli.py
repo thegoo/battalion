@@ -1779,6 +1779,55 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(first_json, second_json)
         self.assertTrue(any(check["evidence"] for check in first["checks"]))
 
+    def test_assure_run_derives_localhost_url_from_project_documentation(self):
+        self.write_assurance_contract([
+            "A valid GET request returns HTTP 200",
+            "The response provides a machine-readable health result",
+        ], [], "completed", "planned")
+        readme = self.cwd / "README.md"
+        readme.write_text("Run curl http://127.0.0.1:3000/v1/health to validate the service.\n", encoding="utf-8")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()) as runtime:
+            result = assure(self.workspace, run=True)
+        runtime.assert_called_once_with("http://127.0.0.1:3000/v1/health")
+        self.assertEqual(result.engineering_result["summary"]["runtime_checks"], 2)
+        self.assertTrue(all(check["result"] == "VERIFIED" for check in result.engineering_result["checks"]))
+
+    def test_assure_lifts_expected_health_status_from_mission_prompt_for_generic_criteria(self):
+        self.write_assurance_contract([
+            "The response provides a machine-readable health result",
+        ], [], "completed", "planned")
+        source = self.cwd / "src" / "app.ts"
+        source.parent.mkdir()
+        source.write_text('response.status(200).json({ status: "ok", timestamp: new Date().toISOString() });\n', encoding="utf-8")
+        result = assure(self.workspace)
+        failed = [check for check in result.engineering_result["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(result.engineering_result["status"], "RED")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+
+    def test_assure_static_verifies_common_project_artifacts(self):
+        self.write_assurance_contract([
+            "Application source is implemented in TypeScript",
+            "The application executes on Node.js",
+            "A documented application entrypoint starts successfully",
+            "A health endpoint exists",
+            "The response includes a timestamp in the clarified format",
+            "POST requests are rejected",
+            "Documentation explains how to run the solution",
+        ], [], "completed", "planned")
+        (self.cwd / "src").mkdir()
+        (self.cwd / "src" / "server.ts").write_text(
+            'createApp().listen(3000); app.get("/v1/health", handler); app.all("/v1/health", methodNotAllowed); response.status(405).json({ error: { message: "Method not allowed" }}); response.json({ timestamp: new Date().toISOString() });\n',
+            encoding="utf-8",
+        )
+        (self.cwd / "package.json").write_text(json.dumps({"scripts": {"start": "node dist/server.js"}, "engines": {"node": ">=20"}}), encoding="utf-8")
+        (self.cwd / "README.md").write_text("Install and run with npm start.\n", encoding="utf-8")
+        result = assure(self.workspace)
+        checks = result.engineering_result["checks"]
+        self.assertEqual(result.engineering_result["summary"]["verified"], len(checks))
+        self.assertTrue(all(check["result"] == "VERIFIED" for check in checks))
+
     def test_green_succeeds_for_complete_contract(self):
         self.initialize()
         self.plan_contract()
