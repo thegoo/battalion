@@ -924,7 +924,7 @@ def resolve_assessment_clarifications(workspace, args, assessment_result):
 
 def assurance(args, cwd):
     workspace = workspace_or_exit(cwd)
-    result = assure(workspace)
+    result = assure(workspace, run=args.run)
     if (workspace / "events.jsonl").is_file(): append_event(workspace, "assurance_completed", result.to_dict())
     counts = result.clarification_counts
     engineering = result.engineering_result or {}
@@ -936,12 +936,20 @@ def assurance(args, cwd):
     print(f"- Verified: {summary.get('verified', 0)}")
     print(f"- Failed: {summary.get('failed', 0)}")
     print(f"- Unable to verify: {summary.get('unable_to_verify', 0)}")
+    print(f"- Runtime Checks: {summary.get('runtime_checks', 0)}")
+    print(f"- Static Checks: {summary.get('static_checks', 0)}")
     for title, state in (("Failed", "FAILED"), ("Unable to verify", "UNABLE_TO_VERIFY")):
         print(f"\n{title}:")
         checks = [check for check in engineering.get("checks", []) if check.get("result") == state]
         if checks:
             for check in checks:
-                print(f"- {check.get('requirement_id', '—')}: {check.get('finding', '—')}")
+                print(f"- Requirement: {check.get('requirement_id', '—')}")
+                print(f"  Criterion: {check.get('criterion', '—')}")
+                print(f"  Result: {check.get('result', '—')}")
+                print(f"  Evidence: {json.dumps(check.get('evidence'), sort_keys=True)}")
+                print(f"  Expected: {json.dumps(check.get('expected'), sort_keys=True)}")
+                print(f"  Observed: {json.dumps(check.get('observed'), sort_keys=True)}")
+                print(f"  Finding: {check.get('finding', '—')}")
                 print(f"  Recommendation: {check.get('recommendation', '—')}")
         else:
             print("- None")
@@ -976,7 +984,7 @@ def report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.6.0 deterministic mission assessment, planning, dispatch, and assurance")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.6.1 deterministic mission assessment, planning, dispatch, and assurance")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -1005,7 +1013,9 @@ def parser():
     p = commands.add_parser("assess")
     p.add_argument("--interactive", action="store_true", help="Prompt for outstanding clarification answers during assessment")
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
-    commands.add_parser("assure"); commands.add_parser("report")
+    p = commands.add_parser("assure")
+    p.add_argument("--run", action="store_true", help="Run deterministic local runtime validation in addition to static assurance")
+    commands.add_parser("report")
     return result
 
 

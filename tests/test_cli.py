@@ -30,6 +30,19 @@ class FakeProcess:
         return self.return_code
 
 
+def runtime_http_response(status="Healthy", timestamp="2026-07-03T02:44:00.284Z", code=200):
+    body = json.dumps({"status": status, "timestamp": timestamp})
+    return {
+        "ok": True,
+        "url": "http://127.0.0.1:48151/v1/health",
+        "status_code": code,
+        "headers": {"content-type": "application/json"},
+        "body": body,
+        "json": json.loads(body),
+        "error": None,
+    }
+
+
 class BattalionCliTests(unittest.TestCase):
     CONSTRAINT_PROMPT = (
         "Build a TypeScript Node REST API running in Docker with a health endpoint. "
@@ -227,7 +240,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.6.0", output.getvalue())
+        self.assertIn("Battalion v0.6.1", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -1684,6 +1697,87 @@ class BattalionCliTests(unittest.TestCase):
         self.result()
         second_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
         self.assertEqual(first_json["engineering_result"], second_json["engineering_result"])
+
+    def test_assure_performs_static_validation_by_default(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Health endpoint returns JSON response",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()) as runtime:
+            output = self.run_cli("assure")
+        runtime.assert_not_called()
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["engineering_result"]["summary"]["runtime_checks"], 0)
+        self.assertEqual(data["engineering_result"]["summary"]["static_checks"], 3)
+        self.assertEqual(data["engineering_result"]["status"], "AMBER")
+        self.assertIn("Runtime Checks: 0", output)
+
+    def test_assure_run_performs_runtime_validation(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Health endpoint returns JSON response",
+            "Response body status equals Healthy",
+            "Response body timestamp is ISO 8601 UTC",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()) as runtime:
+            output = self.run_cli("assure", "--run")
+        runtime.assert_called_once_with("http://127.0.0.1:48151/v1/health")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        engineering = data["engineering_result"]
+        self.assertEqual(engineering["status"], "GREEN")
+        self.assertEqual(engineering["summary"]["verified"], 4)
+        self.assertEqual(engineering["summary"]["runtime_checks"], 4)
+        self.assertTrue(all(check["result"] == "VERIFIED" for check in engineering["checks"]))
+        self.assertTrue(all(check["validation_mode"] == "runtime" for check in engineering["checks"]))
+        self.assertIn("Runtime Checks: 4", output)
+
+    def test_assure_run_detects_health_endpoint_status_contract_violation_without_manual_evidence(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Health endpoint returns JSON response",
+            "Response body status equals Healthy",
+            "Response body timestamp is ISO 8601 UTC",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        engineering = data["engineering_result"]
+        failed = [check for check in engineering["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(engineering["status"], "RED")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+        self.assertEqual(failed[0]["validation_mode"], "runtime")
+        self.assertRegex(failed[0]["execution_timestamp"], r"^\d{4}-\d{2}-\d{2}T")
+        self.assertIn('"status": "ok"', failed[0]["evidence"][0]["body"])
+        self.assertIn("Expected response status field", output)
+        self.assertIn("Observed:", output)
+
+    def test_assure_run_eliminates_duplicated_findings(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            result = assure(self.workspace, run=True)
+        status_findings = [finding for finding in result.findings if 'Expected response status field "Healthy"; observed "ok".' in finding]
+        self.assertEqual(len(status_findings), 1)
+        self.assertEqual(len(result.engineering_result["checks"]), 2)
+
+    def test_assure_run_runtime_evidence_artifacts_are_deterministic(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            first = assure(self.workspace, run=True).engineering_result
+            first_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))["engineering_result"]
+            second = assure(self.workspace, run=True).engineering_result
+            second_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))["engineering_result"]
+        self.assertEqual(first, second)
+        self.assertEqual(first_json, second_json)
+        self.assertTrue(any(check["evidence"] for check in first["checks"]))
 
     def test_green_succeeds_for_complete_contract(self):
         self.initialize()

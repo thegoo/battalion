@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "battalion-cli"
-version = "0.6.0"
+version = "0.6.1"
 description = "Deterministic mission assessment, planning, dispatch, and assurance"
 requires-python = ">=3.9"
 dependencies = ["PyYAML>=6.0,<7.0", "pytest>=8,<10"]

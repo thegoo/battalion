@@ -2,6 +2,9 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from .models import AssuranceResult, FINAL_STATUSES, VALID_REVIEW_STATUSES, VALID_STATUSES
 from .storage import read_yaml
@@ -361,6 +364,8 @@ def _validate_clarifications(values, mission_prompt, constraint_ids):
 
 
 ENGINEERING_RESULTS = ("VERIFIED", "FAILED", "UNABLE_TO_VERIFY")
+RUNTIME_EXECUTION_TIMESTAMP = "1970-01-01T00:00:00Z"
+SAFE_RUNTIME_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def _project_files(workspace):
@@ -420,7 +425,7 @@ def _all_text_sources(workspace, requirement):
     return sources
 
 
-def _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, result, finding, recommendation):
+def _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, result, finding, recommendation, execution_timestamp=None, validation_mode="static"):
     if result not in ENGINEERING_RESULTS:
         raise ValueError(f"invalid engineering assurance result: {result}")
     return {
@@ -434,6 +439,8 @@ def _check(check_id, requirement_id, criterion, check_type, expected, observed, 
         "result": result,
         "finding": finding,
         "recommendation": recommendation,
+        "execution_timestamp": execution_timestamp,
+        "validation_mode": validation_mode,
     }
 
 
@@ -460,11 +467,239 @@ def _observed_status_value(workspace, requirement):
 
 
 def _extract_endpoint(criterion):
+    url_match = re.search(r"https?://[^\s)>'\"]+", criterion)
+    if url_match:
+        parsed = urlparse(url_match.group(0))
+        if parsed.path:
+            return parsed.path
     match = re.search(r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./{}:-]*)", criterion)
     if match:
         return match.group(1)
     match = re.search(r"endpoint\s+(/[A-Za-z0-9_./{}:-]*)", criterion, flags=re.IGNORECASE)
     return match.group(1) if match else None
+
+
+def _extract_safe_runtime_urls(text):
+    urls = []
+    if not _is_text(text):
+        return urls
+    for match in re.finditer(r"https?://[^\s)>'\"]+", text):
+        raw = match.group(0).rstrip(".,;")
+        parsed = urlparse(raw)
+        if parsed.scheme != "http" or parsed.hostname not in SAFE_RUNTIME_HOSTS:
+            continue
+        if not parsed.path:
+            continue
+        urls.append(raw)
+    return urls
+
+
+def _runtime_url_for_requirement(workspace, requirement, criterion):
+    for source in [criterion, requirement.get("statement", "")]:
+        urls = _extract_safe_runtime_urls(source)
+        if urls:
+            return urls[0]
+    for item in requirement.get("acceptance", []) if isinstance(requirement.get("acceptance"), list) else []:
+        urls = _extract_safe_runtime_urls(item)
+        if urls:
+            return urls[0]
+    endpoint = _extract_endpoint(criterion) or _requirement_endpoint(requirement)
+    if not endpoint:
+        return None
+    for _, text in _all_text_sources(workspace, requirement):
+        for url in _extract_safe_runtime_urls(text):
+            parsed = urlparse(url)
+            if parsed.path == endpoint:
+                return url
+    return None
+
+
+def _requirement_endpoint(requirement):
+    for source in [requirement.get("statement", "")]:
+        endpoint = _extract_endpoint(source)
+        if endpoint:
+            return endpoint
+    for criterion in requirement.get("acceptance", []) if isinstance(requirement.get("acceptance"), list) else []:
+        endpoint = _extract_endpoint(criterion)
+        if endpoint:
+            return endpoint
+    return None
+
+
+def _runtime_http_get(url):
+    request = Request(url, method="GET", headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=2) as response:
+            raw = response.read(65536)
+            body = raw.decode("utf-8", errors="replace")
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            return {
+                "ok": True,
+                "url": url,
+                "status_code": response.status,
+                "headers": headers,
+                "body": body,
+                "json": _parse_json_body(body),
+                "error": None,
+            }
+    except HTTPError as exc:
+        raw = exc.read(65536)
+        body = raw.decode("utf-8", errors="replace")
+        headers = {key.lower(): value for key, value in exc.headers.items()}
+        return {
+            "ok": True,
+            "url": url,
+            "status_code": exc.code,
+            "headers": headers,
+            "body": body,
+            "json": _parse_json_body(body),
+            "error": None,
+        }
+    except (OSError, URLError) as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "status_code": None,
+            "headers": {},
+            "body": "",
+            "json": None,
+            "error": str(exc),
+        }
+
+
+def _parse_json_body(body):
+    try:
+        return json.loads(body)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def _runtime_execution_timestamp(workspace):
+    try:
+        for line in (workspace / "events.jsonl").read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if isinstance(event, dict) and event.get("type") == "mission_initialized" and _is_timestamp(event.get("timestamp")):
+                return event["timestamp"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return RUNTIME_EXECUTION_TIMESTAMP
+
+
+def _runtime_response(workspace, requirement, criterion, cache):
+    url = _runtime_url_for_requirement(workspace, requirement, criterion)
+    if not url:
+        return None, None
+    if url not in cache:
+        cache[url] = _runtime_http_get(url)
+    return url, cache[url]
+
+
+def _runtime_check_for_criterion(workspace, requirement, criterion, check_number, cache, runtime_timestamp):
+    requirement_id = requirement.get("id") if _is_text(requirement.get("id")) else "UNKNOWN"
+    check_id = f"ENG-{check_number:03d}"
+    criterion_lower = criterion.lower()
+    endpoint = _extract_endpoint(criterion) or _requirement_endpoint(requirement)
+    expected_status = _extract_expected_status_value(criterion)
+    runtime_relevant = bool(endpoint or expected_status or "http 200" in criterion_lower or "status code 200" in criterion_lower or "json" in criterion_lower or "timestamp" in criterion_lower)
+    if not runtime_relevant:
+        return None
+    url, response = _runtime_response(workspace, requirement, criterion, cache)
+    if not response:
+        return _check(
+            check_id, requirement_id, criterion, "runtime_http",
+            {"endpoint": endpoint or "runtime endpoint"}, None, [],
+            "UNABLE_TO_VERIFY",
+            f"{requirement_id}: Unable to run deterministic HTTP validation; no safe localhost URL was found.",
+            "Provide a localhost runtime URL in the mission contract, acceptance criteria, or evidence.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    evidence = [{
+        "type": "http_response",
+        "url": url,
+        "status_code": response["status_code"],
+        "headers": response["headers"],
+        "body": response["body"],
+        "error": response["error"],
+    }]
+    if not response["ok"]:
+        return _check(
+            check_id, requirement_id, criterion, "runtime_http",
+            {"endpoint": endpoint or url}, {"error": response["error"]}, evidence,
+            "UNABLE_TO_VERIFY",
+            f"{requirement_id}: Unable to execute HTTP runtime validation: {response['error']}.",
+            "Start the local application and retry battalion assure --run.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    if expected_status:
+        observed = response["json"].get("status") if isinstance(response["json"], dict) else None
+        if observed == expected_status:
+            return _check(
+                check_id, requirement_id, criterion, "runtime_response_body_literal",
+                {"field": "status", "value": expected_status}, {"field": "status", "value": observed}, evidence,
+                "VERIFIED",
+                f"{requirement_id}: Runtime response status field equals {expected_status}.",
+                "No action required.",
+                execution_timestamp=runtime_timestamp,
+                validation_mode="runtime",
+            )
+        return _check(
+            check_id, requirement_id, criterion, "runtime_response_body_literal",
+            {"field": "status", "value": expected_status}, {"field": "status", "value": observed}, evidence,
+            "FAILED",
+            f'{requirement_id}: Expected response status field "{expected_status}"; observed "{observed}".',
+            "Implementation does not satisfy the engineering contract. Update implementation or engineering contract.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    if "http 200" in criterion_lower or "status code 200" in criterion_lower:
+        result = "VERIFIED" if response["status_code"] == 200 else "FAILED"
+        return _check(
+            check_id, requirement_id, criterion, "runtime_http_status",
+            200, response["status_code"], evidence, result,
+            f"{requirement_id}: Observed HTTP {response['status_code']} response.",
+            "No action required." if result == "VERIFIED" else "Return HTTP 200 for the required endpoint.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    if "json" in criterion_lower:
+        is_json = isinstance(response["json"], (dict, list))
+        return _check(
+            check_id, requirement_id, criterion, "runtime_json_response",
+            "valid JSON response", "valid JSON response" if is_json else "non-JSON response", evidence,
+            "VERIFIED" if is_json else "FAILED",
+            f"{requirement_id}: Runtime response {'is valid JSON' if is_json else 'is not valid JSON'}.",
+            "No action required." if is_json else "Return a JSON response body.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    if "timestamp" in criterion_lower:
+        value = response["json"].get("timestamp") if isinstance(response["json"], dict) else None
+        valid = _is_timestamp(value)
+        return _check(
+            check_id, requirement_id, criterion, "runtime_timestamp",
+            "ISO-8601 UTC timestamp", value, evidence,
+            "VERIFIED" if valid else "FAILED",
+            f"{requirement_id}: Runtime timestamp {'is parseable' if valid else 'is missing or invalid'}." if valid else f"{requirement_id}: Runtime timestamp is missing or invalid: {value}.",
+            "No action required." if valid else "Return timestamp in ISO-8601 UTC format.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    if endpoint:
+        matches = urlparse(url).path == endpoint
+        return _check(
+            check_id, requirement_id, criterion, "runtime_endpoint",
+            endpoint, urlparse(url).path, evidence,
+            "VERIFIED" if matches else "FAILED",
+            f"{requirement_id}: Runtime endpoint {urlparse(url).path} was observed.",
+            "No action required." if matches else "Invoke or expose the required endpoint.",
+            execution_timestamp=runtime_timestamp,
+            validation_mode="runtime",
+        )
+    return None
 
 
 def _contains_in_sources(workspace, requirement, value):
@@ -605,12 +840,14 @@ def _engineering_check_for_criterion(workspace, requirement, criterion, check_nu
     )
 
 
-def _engineering_assurance(workspace, requirements):
+def _engineering_assurance(workspace, requirements, run=False):
     checks = []
     check_number = 1
+    runtime_cache = {}
+    runtime_timestamp = _runtime_execution_timestamp(workspace)
     requirements = requirements or []
     if not requirements:
-        return {"status": "AMBER", "recommendation": "NO-GO", "checks": [], "summary": {"verified": 0, "failed": 0, "unable_to_verify": 0}}
+        return {"status": "AMBER", "recommendation": "NO-GO", "checks": [], "summary": {"verified": 0, "failed": 0, "unable_to_verify": 0, "runtime_checks": 0, "static_checks": 0}}
 
     for requirement in requirements:
         if not isinstance(requirement, dict):
@@ -621,13 +858,18 @@ def _engineering_assurance(workspace, requirements):
         for criterion in acceptance:
             if not _is_text(criterion):
                 continue
-            checks.append(_engineering_check_for_criterion(workspace, requirement, criterion, check_number))
+            check = _runtime_check_for_criterion(workspace, requirement, criterion, check_number, runtime_cache, runtime_timestamp) if run else None
+            if check is None:
+                check = _engineering_check_for_criterion(workspace, requirement, criterion, check_number)
+            checks.append(check)
             check_number += 1
 
     summary = {
         "verified": sum(1 for check in checks if check["result"] == "VERIFIED"),
         "failed": sum(1 for check in checks if check["result"] == "FAILED"),
         "unable_to_verify": sum(1 for check in checks if check["result"] == "UNABLE_TO_VERIFY"),
+        "runtime_checks": sum(1 for check in checks if check.get("validation_mode") == "runtime"),
+        "static_checks": sum(1 for check in checks if check.get("validation_mode") == "static"),
     }
     if summary["failed"]:
         status = "RED"
@@ -668,6 +910,8 @@ def _write_assurance_artifacts(workspace, result):
         f"- Verified: {result.engineering_result.get('summary', {}).get('verified', 0)}",
         f"- Failed: {result.engineering_result.get('summary', {}).get('failed', 0)}",
         f"- Unable to verify: {result.engineering_result.get('summary', {}).get('unable_to_verify', 0)}",
+        f"- Runtime Checks: {result.engineering_result.get('summary', {}).get('runtime_checks', 0)}",
+        f"- Static Checks: {result.engineering_result.get('summary', {}).get('static_checks', 0)}",
         "",
     ]
     failed = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "FAILED"]
@@ -677,10 +921,19 @@ def _write_assurance_artifacts(workspace, result):
         lines.extend([f"## {title}", ""])
         if values:
             for check in values:
-                lines.append(f"- {check['requirement_id']}: {check['finding']}")
+                lines.append(f"### {check['requirement_id']} — {check['result']}")
+                lines.append("")
+                lines.append(f"- Criterion: {check['criterion']}")
+                lines.append(f"- Check Type: {check['check_type']}")
+                lines.append(f"- Expected: {json.dumps(check.get('expected'), sort_keys=True)}")
+                lines.append(f"- Observed: {json.dumps(check.get('observed'), sort_keys=True)}")
+                lines.append(f"- Evidence: {json.dumps(check.get('evidence'), sort_keys=True)}")
+                lines.append(f"- Finding: {check['finding']}")
+                lines.append(f"- Recommendation: {check['recommendation']}")
                 if check.get("evidence"):
-                    lines.append(f"  - Evidence: {', '.join(str(item) for item in check['evidence'])}")
-                lines.append(f"  - Recommendation: {check['recommendation']}")
+                    lines.append(f"- Validation Mode: {check.get('validation_mode', 'static')}")
+                if check.get("execution_timestamp"):
+                    lines.append(f"- Execution Timestamp: {check['execution_timestamp']}")
         else:
             lines.append("- None")
         lines.append("")
@@ -786,7 +1039,7 @@ def _governance_assure(workspace: Path) -> AssuranceResult:
     return AssuranceResult("GREEN", "GO", 100, ["Mission contract satisfied: all requirements are closed with acceptance criteria, verifiable evidence, completed reviews, and a valid audit trail"], clarification_counts)
 
 
-def assure(workspace: Path) -> AssuranceResult:
+def assure(workspace: Path, run: bool = False) -> AssuranceResult:
     governance = _governance_assure(workspace)
     requirements = []
     try:
@@ -796,7 +1049,7 @@ def assure(workspace: Path) -> AssuranceResult:
     except ValueError:
         requirements = []
 
-    engineering = _engineering_assurance(workspace, requirements)
+    engineering = _engineering_assurance(workspace, requirements, run=run)
     if engineering["status"] == "RED":
         overall_status = "RED"
     elif governance.status == "RED":

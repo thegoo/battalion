@@ -278,6 +278,24 @@ Runs Mission Assurance.
 battalion assure
 ```
 
+Static Assurance is the default:
+
+```bash
+battalion assure
+```
+
+Static Assurance validates recorded artifacts, evidence files, source-visible contract signals, reviews, schemas, traceability, and audit records.
+
+Runtime Assurance is opt-in:
+
+```bash
+battalion assure --run
+```
+
+Runtime Assurance validates deterministic local engineering behavior when safe local checks are available. For example, it may inspect localhost HTTP responses and compare observed status codes, JSON bodies, response fields, and timestamps against acceptance criteria.
+
+Runtime Assurance does not deploy, commit, push, create pull requests, call external APIs, or manage executor/runtime setup.
+
 Assurance answers:
 
 > Did we build what we agreed to build?
@@ -296,6 +314,8 @@ Each engineering check returns:
 - `UNABLE_TO_VERIFY`
 
 `UNABLE_TO_VERIFY` means Battalion could not prove the criterion deterministically from available artifacts or evidence.
+
+Runtime evidence, when available, is preferred over static evidence because observable engineering behavior is stronger than source inspection.
 
 Assurance separates engineering-contract findings from governance findings. Engineering findings answer whether the implementation satisfies the contract. Governance findings cover reviews, audit integrity, schema validity, and contract lifecycle state.
 

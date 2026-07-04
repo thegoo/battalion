@@ -9,6 +9,22 @@ All notable Battalion changes are summarized here. Product usage documentation l
 - Rewrote `README.md` as product documentation rather than implementation history.
 - Moved release and slice summaries into `CHANGELOG.md`.
 
+## v0.6.1 — Mission Assurance Runtime Validation
+
+### Added
+
+- Added opt-in runtime Mission Assurance with `battalion assure --run`.
+- Added deterministic localhost HTTP validation for endpoint acceptance criteria.
+- Added runtime evidence capture for HTTP responses, status codes, headers, response bodies, and JSON fields.
+- Added runtime/static check counts to engineering assurance summaries.
+- Added runtime evidence to `.battalion/assurance.json` and `.battalion/assurance.md`.
+
+### Changed
+
+- Static assurance remains the default for `battalion assure`.
+- Runtime evidence is preferred over static evidence when `--run` is requested and a safe localhost target is available.
+- Assurance CLI output now presents one engineering outcome per acceptance criterion with expected, observed, evidence, and recommendation details.
+
 ## v0.6.0 — Mission Assurance MVP
 
 ### Added
