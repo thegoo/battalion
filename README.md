@@ -296,6 +296,23 @@ Runtime Assurance validates deterministic local engineering behavior when safe l
 
 Runtime Assurance does not deploy, commit, push, create pull requests, call external APIs, or manage executor/runtime setup.
 
+When runtime validation executes, Battalion prints the runtime target it validated:
+
+```text
+Runtime Target:
+- Base URL: http://127.0.0.1:3000
+  Endpoint: /v1/health
+  Full URL: http://127.0.0.1:3000/v1/health
+```
+
+Default CLI output is concise and shows expected values, observed values, summarized evidence, recommendations, and diagnostics such as stale runtime/build hints. Full evidence is still preserved in `.battalion/assurance.json` and `.battalion/assurance.md`.
+
+To print full runtime evidence in the terminal:
+
+```bash
+battalion assure --run --verbose
+```
+
 Assurance answers:
 
 > Did we build what we agreed to build?

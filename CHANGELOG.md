@@ -4,6 +4,12 @@ All notable Battalion changes are summarized here. Product usage documentation l
 
 ## Unreleased
 
+### Changed
+
+- Improved `battalion assure --run` runtime target reporting and diagnostics.
+- Added concise default CLI evidence output with full runtime evidence available via `--verbose`.
+- Added stale runtime/build and missing Node dependency diagnostics for Mission Assurance.
+
 ### Documentation
 
 - Rewrote `README.md` as product documentation rather than implementation history.

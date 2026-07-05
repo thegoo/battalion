@@ -36,7 +36,7 @@ def runtime_http_response(status="Healthy", timestamp="2026-07-03T02:44:00.284Z"
         "ok": True,
         "url": "http://127.0.0.1:48151/v1/health",
         "status_code": code,
-        "headers": {"content-type": "application/json"},
+        "headers": {"content-type": "application/json", "x-diagnostic": "full-header-value"},
         "body": body,
         "json": json.loads(body),
         "error": None,
@@ -1910,6 +1910,71 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn('"status": "ok"', failed[0]["evidence"][0]["body"])
         self.assertIn("Expected response status field", output)
         self.assertIn("Observed:", output)
+
+    def test_assure_run_prints_runtime_target_and_concise_default_evidence(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run")
+        self.assertIn("Runtime Target:", output)
+        self.assertIn("Base URL: http://127.0.0.1:48151", output)
+        self.assertIn("Endpoint: /v1/health", output)
+        self.assertIn("Full URL: http://127.0.0.1:48151/v1/health", output)
+        self.assertIn('Expected: {"field": "status", "value": "Healthy"}', output)
+        self.assertIn('Observed: {"field": "status", "value": "ok"}', output)
+        self.assertIn("HTTP response (url=http://127.0.0.1:48151/v1/health, status=200", output)
+        self.assertNotIn("x-diagnostic", output)
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        evidence = data["engineering_result"]["checks"][1]["evidence"][0]
+        self.assertEqual(evidence["headers"]["x-diagnostic"], "full-header-value")
+
+    def test_assure_run_verbose_includes_full_runtime_evidence(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run", "--verbose")
+        self.assertIn("x-diagnostic", output)
+        self.assertIn('"headers": {"content-type": "application/json", "x-diagnostic": "full-header-value"}', output)
+
+    def test_assure_run_reports_stale_runtime_and_build_diagnostics_without_overriding_failure(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        (self.cwd / "src").mkdir()
+        (self.cwd / "dist").mkdir()
+        (self.cwd / "src" / "app.ts").write_text('response.json({ status: "Healthy" });\n', encoding="utf-8")
+        (self.cwd / "dist" / "app.js").write_text('response.json({ status: "ok" });\n', encoding="utf-8")
+        (self.cwd / "package.json").write_text(json.dumps({"scripts": {"build": "tsc", "test": "node --test dist"}}), encoding="utf-8")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        failed = [check for check in data["engineering_result"]["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+        self.assertTrue(any("running process may be stale" in item for item in failed[0]["diagnostics"]))
+        self.assertTrue(any("Build artifacts may be stale" in item for item in failed[0]["diagnostics"]))
+        self.assertIn("The running process may be stale", output)
+        self.assertIn("Build artifacts may be stale", output)
+        self.assertEqual(data["engineering_result"]["status"], "RED")
+
+    def test_assure_run_reports_missing_node_dependencies(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+        ], [], "completed", "planned")
+        (self.cwd / "package.json").write_text(json.dumps({"scripts": {"build": "tsc", "test": "tsx src/app.test.ts"}}), encoding="utf-8")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()):
+            output = self.run_cli("assure", "--run")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        diagnostics = data["engineering_result"]["diagnostics"]
+        self.assertIn("Dependencies are not installed. Run npm install, then rerun assurance.", diagnostics)
+        self.assertTrue(any("command not found: tsc" in item for item in diagnostics))
+        self.assertTrue(any("command not found: tsx" in item for item in diagnostics))
+        self.assertIn("Dependencies are not installed. Run npm install, then rerun assurance.", output)
 
     def test_assure_run_eliminates_duplicated_findings(self):
         self.write_assurance_contract([

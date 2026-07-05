@@ -456,7 +456,21 @@ def _source_files(workspace, suffixes):
     return [reference for reference, _ in _project_files(workspace) if reference.endswith(suffixes)]
 
 
-def _check(check_id, requirement_id, criterion, check_type, expected, observed, evidence, result, finding, recommendation, execution_timestamp=None, validation_mode="static"):
+def _check(
+    check_id,
+    requirement_id,
+    criterion,
+    check_type,
+    expected,
+    observed,
+    evidence,
+    result,
+    finding,
+    recommendation,
+    execution_timestamp=None,
+    validation_mode="static",
+    diagnostics=None,
+):
     if result not in ENGINEERING_RESULTS:
         raise ValueError(f"invalid engineering assurance result: {result}")
     return {
@@ -472,6 +486,7 @@ def _check(check_id, requirement_id, criterion, check_type, expected, observed, 
         "recommendation": recommendation,
         "execution_timestamp": execution_timestamp,
         "validation_mode": validation_mode,
+        "diagnostics": diagnostics or [],
     }
 
 
@@ -534,6 +549,84 @@ def _observed_status_value(workspace, requirement):
             if match:
                 return match.group(1), reference
     return None, None
+
+
+def _status_values_by_source_group(workspace):
+    grouped = {"src": [], "dist": [], "test": [], "docs": [], "other": []}
+    for reference, text in _project_text_sources(workspace):
+        for pattern in (
+            r'"status"\s*:\s*"([^"]+)"',
+            r"'status'\s*:\s*'([^']+)'",
+            r"\bstatus\s*:\s*[\"']([^\"']+)[\"']",
+        ):
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                value = match.group(1)
+                if reference.startswith("src/"):
+                    group = "src"
+                elif reference.startswith("dist/"):
+                    group = "dist"
+                elif reference.startswith(("tests/", "test/")) or re.search(r"(test|spec)\.[A-Za-z0-9]+$", reference, flags=re.IGNORECASE):
+                    group = "test"
+                elif reference.lower() == "readme.md" or reference.lower().startswith("docs/"):
+                    group = "docs"
+                else:
+                    group = "other"
+                grouped[group].append({"value": value, "source": reference})
+    return grouped
+
+
+def _status_diagnostics(workspace, expected, observed):
+    diagnostics = []
+    grouped = _status_values_by_source_group(workspace)
+    src_expected = [item["source"] for item in grouped["src"] if item["value"] == expected]
+    dist_observed = [item["source"] for item in grouped["dist"] if item["value"] == observed]
+    dist_expected = [item["source"] for item in grouped["dist"] if item["value"] == expected]
+    src_observed = [item["source"] for item in grouped["src"] if item["value"] == observed]
+    if observed != expected and src_expected:
+        diagnostics.append(
+            f'Runtime returned status = "{observed}". Source appears to contain status = "{expected}" ({src_expected[0]}). '
+            "The running process may be stale. Restart the application and rerun assurance."
+        )
+    if observed != expected and src_expected and dist_observed and not dist_expected:
+        diagnostics.append(
+            f'Source indicates expected status = "{expected}", but dist output indicates status = "{observed}" ({dist_observed[0]}). '
+            "Build artifacts may be stale. Run npm run build, restart service, then rerun assurance."
+        )
+    if observed != expected and src_observed and not src_expected:
+        diagnostics.append(f'Implementation source appears to contain status = "{observed}" ({src_observed[0]}).')
+    return diagnostics
+
+
+def _node_diagnostics(workspace):
+    diagnostics = []
+    package, _ = _package_json(workspace)
+    if package is None:
+        return diagnostics
+    scripts = package.get("scripts", {}) if isinstance(package.get("scripts"), dict) else {}
+    if not (workspace.parent / "node_modules").is_dir():
+        diagnostics.append("Dependencies are not installed. Run npm install, then rerun assurance.")
+    if "test" not in scripts:
+        diagnostics.append("npm test is unavailable. Add a test script to package.json or provide validation evidence.")
+    if "build" not in scripts:
+        diagnostics.append("npm run build is unavailable. Add a build script to package.json or provide build evidence.")
+    if "build" in scripts and "tsc" in scripts.get("build", "") and not _local_node_binary_exists(workspace, "tsc"):
+        diagnostics.append("command not found: tsc. Dependencies are not installed. Run npm install, then rerun assurance.")
+    if any("tsx" in str(value) for value in scripts.values()) and not _local_node_binary_exists(workspace, "tsx"):
+        diagnostics.append("command not found: tsx. Dependencies are not installed. Run npm install, then rerun assurance.")
+    return _dedupe(diagnostics)
+
+
+def _local_node_binary_exists(workspace, name):
+    binary = workspace.parent / "node_modules" / ".bin" / name
+    return binary.exists()
+
+
+def _dedupe(values):
+    result = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
 
 
 def _extract_endpoint(criterion):
@@ -730,6 +823,7 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
             "Provide a localhost runtime URL in the mission contract, acceptance criteria, or evidence.",
             execution_timestamp=runtime_timestamp,
             validation_mode="runtime",
+            diagnostics=_node_diagnostics(workspace),
         )
     evidence = [{
         "type": "http_response",
@@ -748,6 +842,7 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
             "Start the local application and retry battalion assure --run.",
             execution_timestamp=runtime_timestamp,
             validation_mode="runtime",
+            diagnostics=_node_diagnostics(workspace),
         )
     if expected_status:
         observed = response["json"].get("status") if isinstance(response["json"], dict) else None
@@ -769,6 +864,7 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
             "Implementation does not satisfy the engineering contract. Update implementation or engineering contract.",
             execution_timestamp=runtime_timestamp,
             validation_mode="runtime",
+            diagnostics=_dedupe(_status_diagnostics(workspace, expected_status, observed) + _node_diagnostics(workspace)),
         )
     if "http 200" in criterion_lower or "status code 200" in criterion_lower:
         result = "VERIFIED" if response["status_code"] == 200 else "FAILED"
@@ -779,6 +875,7 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
             "No action required." if result == "VERIFIED" else "Return HTTP 200 for the required endpoint.",
             execution_timestamp=runtime_timestamp,
             validation_mode="runtime",
+            diagnostics=[] if result == "VERIFIED" else _node_diagnostics(workspace),
         )
     if "json" in criterion_lower:
         is_json = isinstance(response["json"], (dict, list))
@@ -790,6 +887,7 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
             "No action required." if is_json else "Return a JSON response body.",
             execution_timestamp=runtime_timestamp,
             validation_mode="runtime",
+            diagnostics=[] if is_json else _node_diagnostics(workspace),
         )
     if "timestamp" in criterion_lower:
         value = response["json"].get("timestamp") if isinstance(response["json"], dict) else None
@@ -802,6 +900,7 @@ def _runtime_check_for_criterion(workspace, requirement, criterion, check_number
             "No action required." if valid else "Return timestamp in ISO-8601 UTC format.",
             execution_timestamp=runtime_timestamp,
             validation_mode="runtime",
+            diagnostics=[] if valid else _node_diagnostics(workspace),
         )
     if endpoint:
         matches = urlparse(url).path == endpoint
@@ -1042,7 +1141,14 @@ def _engineering_assurance(workspace, requirements, run=False):
     runtime_timestamp = _runtime_execution_timestamp(workspace)
     requirements = requirements or []
     if not requirements:
-        return {"status": "AMBER", "recommendation": "NO-GO", "checks": [], "summary": {"verified": 0, "failed": 0, "unable_to_verify": 0, "runtime_checks": 0, "static_checks": 0}}
+        return {
+            "status": "AMBER",
+            "recommendation": "NO-GO",
+            "checks": [],
+            "summary": {"verified": 0, "failed": 0, "unable_to_verify": 0, "runtime_checks": 0, "static_checks": 0},
+            "runtime_targets": [],
+            "diagnostics": _node_diagnostics(workspace) if run else [],
+        }
 
     for requirement in requirements:
         if not isinstance(requirement, dict):
@@ -1077,7 +1183,28 @@ def _engineering_assurance(workspace, requirements, run=False):
         status = "AMBER"
     else:
         status = "GREEN"
-    return {"status": status, "recommendation": "GO" if status == "GREEN" else "NO-GO", "checks": checks, "summary": summary}
+    return {
+        "status": status,
+        "recommendation": "GO" if status == "GREEN" else "NO-GO",
+        "checks": checks,
+        "summary": summary,
+        "runtime_targets": _runtime_targets_from_checks(checks),
+        "diagnostics": _dedupe(_node_diagnostics(workspace) if run else []),
+    }
+
+
+def _runtime_targets_from_checks(checks):
+    targets = []
+    for check in checks:
+        for evidence in check.get("evidence", []) if isinstance(check.get("evidence"), list) else []:
+            if not isinstance(evidence, dict) or evidence.get("type") != "http_response" or not evidence.get("url"):
+                continue
+            parsed = urlparse(evidence["url"])
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            target = {"base_url": base, "endpoint": parsed.path or "/", "full_url": evidence["url"]}
+            if target not in targets:
+                targets.append(target)
+    return targets
 
 
 def _latest_dispatch_metadata(workspace):
@@ -1114,6 +1241,23 @@ def _write_assurance_artifacts(workspace, result):
         f"- Static Checks: {result.engineering_result.get('summary', {}).get('static_checks', 0)}",
         "",
     ]
+    runtime_targets = result.engineering_result.get("runtime_targets", [])
+    lines.extend(["## Runtime Targets", ""])
+    if runtime_targets:
+        for target in runtime_targets:
+            lines.append(f"- Base URL: {target.get('base_url', 'UNKNOWN')}")
+            lines.append(f"  - Endpoint: {target.get('endpoint', 'UNKNOWN')}")
+            lines.append(f"  - Full URL: {target.get('full_url', 'UNKNOWN')}")
+    else:
+        lines.append("- None")
+    lines.append("")
+    diagnostics = result.engineering_result.get("diagnostics", [])
+    lines.extend(["## Diagnostics", ""])
+    if diagnostics:
+        lines.extend(f"- {diagnostic}" for diagnostic in diagnostics)
+    else:
+        lines.append("- None")
+    lines.append("")
     failed = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "FAILED"]
     unable = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "UNABLE_TO_VERIFY"]
     verified = [check for check in result.engineering_result.get("checks", []) if check.get("result") == "VERIFIED"]
@@ -1130,6 +1274,8 @@ def _write_assurance_artifacts(workspace, result):
                 lines.append(f"- Evidence: {json.dumps(check.get('evidence'), sort_keys=True)}")
                 lines.append(f"- Finding: {check['finding']}")
                 lines.append(f"- Recommendation: {check['recommendation']}")
+                if check.get("diagnostics"):
+                    lines.append(f"- Diagnostics: {json.dumps(check.get('diagnostics'), sort_keys=True)}")
                 if check.get("evidence"):
                     lines.append(f"- Validation Mode: {check.get('validation_mode', 'static')}")
                 if check.get("execution_timestamp"):

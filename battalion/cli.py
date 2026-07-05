@@ -939,6 +939,21 @@ def assurance(args, cwd):
     print(f"- Unable to verify: {summary.get('unable_to_verify', 0)}")
     print(f"- Runtime Checks: {summary.get('runtime_checks', 0)}")
     print(f"- Static Checks: {summary.get('static_checks', 0)}")
+    if args.run:
+        print("\nRuntime Target:")
+        targets = engineering.get("runtime_targets", [])
+        if targets:
+            for target in targets:
+                print(f"- Base URL: {target.get('base_url', '—')}")
+                print(f"  Endpoint: {target.get('endpoint', '—')}")
+                print(f"  Full URL: {target.get('full_url', '—')}")
+        else:
+            print("- None detected")
+        diagnostics = engineering.get("diagnostics", [])
+        if diagnostics:
+            print("\nDiagnostics:")
+            for diagnostic in diagnostics:
+                print(f"- {diagnostic}")
     for title, state in (("Failed", "FAILED"), ("Unable to verify", "UNABLE_TO_VERIFY")):
         print(f"\n{title}:")
         checks = [check for check in engineering.get("checks", []) if check.get("result") == state]
@@ -947,11 +962,13 @@ def assurance(args, cwd):
                 print(f"- Requirement: {check.get('requirement_id', '—')}")
                 print(f"  Criterion: {check.get('criterion', '—')}")
                 print(f"  Result: {check.get('result', '—')}")
-                print(f"  Evidence: {json.dumps(check.get('evidence'), sort_keys=True)}")
+                print(f"  Evidence: {_format_evidence(check.get('evidence'), verbose=args.verbose)}")
                 print(f"  Expected: {json.dumps(check.get('expected'), sort_keys=True)}")
                 print(f"  Observed: {json.dumps(check.get('observed'), sort_keys=True)}")
                 print(f"  Finding: {check.get('finding', '—')}")
                 print(f"  Recommendation: {check.get('recommendation', '—')}")
+                for diagnostic in check.get("diagnostics", []) or []:
+                    print(f"  Diagnostic: {diagnostic}")
         else:
             print("- None")
     print("\nGovernance:")
@@ -973,6 +990,32 @@ def assurance(args, cwd):
     print("\nArtifacts:")
     print(f"- {workspace / 'assurance.json'}")
     print(f"- {workspace / 'assurance.md'}")
+
+
+def _format_evidence(evidence, verbose=False):
+    if verbose:
+        return json.dumps(evidence, sort_keys=True)
+    if not evidence:
+        return "None"
+    values = []
+    for item in evidence:
+        if isinstance(item, dict) and item.get("type") == "http_response":
+            parts = []
+            if item.get("url"):
+                parts.append(f"url={item['url']}")
+            if item.get("status_code") is not None:
+                parts.append(f"status={item['status_code']}")
+            if item.get("error"):
+                parts.append(f"error={item['error']}")
+            body = item.get("body")
+            if isinstance(body, str) and len(body) <= 120:
+                parts.append(f"body={body}")
+            elif isinstance(body, str):
+                parts.append(f"body={body[:117]}...")
+            values.append("HTTP response (" + ", ".join(parts) + ")")
+        else:
+            values.append(str(item))
+    return "; ".join(values)
 
 
 def report(args, cwd):
@@ -1024,6 +1067,7 @@ def parser():
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
     p = commands.add_parser("assure")
     p.add_argument("--run", action="store_true", help="Run deterministic local runtime validation in addition to static assurance")
+    p.add_argument("--verbose", action="store_true", help="Show full assurance evidence in CLI output")
     p = commands.add_parser("resolve")
     p.add_argument("--executor", help=f"Send failed Mission Assurance findings to a supported executor: {', '.join(sorted(SUPPORTED_EXECUTORS))}")
     p.add_argument("--mode", choices=["auto", "standard"], default="standard", help="Executor invocation mode; auto permits routine local implementation work but never source control or deployment actions")
