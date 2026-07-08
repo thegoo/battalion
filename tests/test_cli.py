@@ -1437,6 +1437,65 @@ class BattalionCliTests(unittest.TestCase):
         self.run_cli("assess", "--requirement", "Update README with installation instructions.")
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Update README with installation instructions.")
 
+    def mission_scoped_assessment(self, requirement):
+        self.run_cli("assess", "--requirement", requirement)
+        return json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+    def unsatisfied_assessment_findings(self, assessment):
+        return [item for item in assessment["discipline_findings"] if item["status"] == "NEEDS_CLARIFICATION"]
+
+    def finding_text(self, findings):
+        return " ".join(f"{item['discipline']} {item['obligation']} {item['recommendation']}" for item in findings)
+
+    def test_mission_scoped_readme_assessment_has_no_project_readiness_findings(self):
+        assessment = self.mission_scoped_assessment("Create README.md")
+        findings = self.unsatisfied_assessment_findings(assessment)
+        text = self.finding_text(findings)
+
+        self.assertEqual(assessment["requirement_assessment"]["detected_domains"], ["documentation"])
+        self.assertNotIn("Deployment environment", text)
+        self.assertNotIn("Runtime selection", text)
+        self.assertNotIn("Technology stack", text)
+        self.assertNotIn("framework", text.lower())
+
+    def test_mission_scoped_data_assessment_has_no_ui_or_deployment_findings(self):
+        assessment = self.mission_scoped_assessment("Add EmailAddress column to Customer.")
+        findings = self.unsatisfied_assessment_findings(assessment)
+        text = self.finding_text(findings)
+
+        self.assertEqual(assessment["requirement_assessment"]["detected_domains"], ["data"])
+        self.assertNotIn("UX", text)
+        self.assertNotIn("Deployment environment", text)
+        self.assertNotIn("frontend", text.lower())
+
+    def test_mission_scoped_api_assessment_assumes_adjacent_context_without_frontend_findings(self):
+        assessment = self.mission_scoped_assessment("Create GET /customers/{id}/email.")
+        findings = self.unsatisfied_assessment_findings(assessment)
+        text = self.finding_text(findings)
+
+        self.assertIn("api", assessment["requirement_assessment"]["detected_domains"])
+        self.assertIn("Existing data model contains the referenced field or entity.", assessment["requirement_assessment"]["assumptions"])
+        self.assertIn("Existing authentication middleware applies.", assessment["requirement_assessment"]["assumptions"])
+        self.assertNotIn("frontend", text.lower())
+        self.assertNotIn("Deployment environment", text)
+        self.assertEqual(assessment["requirement_assessment"]["questions"], [])
+
+    def test_mission_scoped_ui_assessment_has_no_database_or_deployment_findings(self):
+        assessment = self.mission_scoped_assessment("Update login page styling.")
+        findings = self.unsatisfied_assessment_findings(assessment)
+        text = self.finding_text(findings)
+
+        self.assertIn("ui", assessment["requirement_assessment"]["detected_domains"])
+        self.assertNotIn("database", text.lower())
+        self.assertNotIn("Deployment environment", text)
+
+    def test_mission_scoped_deployment_assessment_keeps_deployment_findings(self):
+        assessment = self.mission_scoped_assessment("Deploy application to Azure App Service.")
+        findings = assessment["discipline_findings"]
+
+        self.assertIn("infra", assessment["requirement_assessment"]["detected_domains"])
+        self.assertTrue(any(item["discipline"] == "DevOps" and item["obligation"] == "Deployment environment identified" for item in findings))
+
     def test_assessment_is_deterministic_for_unchanged_mission(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")

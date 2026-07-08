@@ -305,7 +305,7 @@ def _detect_requirement_domains(text: str) -> List[str]:
         ("api", r"\b(endpoint|api|route|get|post|put|patch|delete|http|rest)\b"),
         ("data", r"\b(database|schema|migration|column|entity|model|table|sql)\b"),
         ("ui", r"\b(screen|page|form|button|ux|ui|modal|frontend|react|view)\b"),
-        ("infra", r"\b(docker|container|kubernetes|terraform|deployment|pipeline|infrastructure|hosting)\b"),
+        ("infra", r"\b(deploy|deployment|docker|container|kubernetes|terraform|pipeline|infrastructure|hosting|azure app service|app service)\b"),
         ("security", r"\b(auth|jwt|oauth|permission|security|encrypt|secret|owasp|authorization|authentication)\b"),
         ("documentation", r"\b(documentation|readme|markdown|docs?|installation instructions)\b"),
         ("testing", r"\b(test|tests|testing|spec|validation|happy-path|negative-path|malicious)\b"),
@@ -384,6 +384,56 @@ def _out_of_scope_domains(domains: List[str]) -> List[str]:
         if domain not in domains and domains != ["unknown"]:
             values.append(domain)
     return values
+
+
+def _mission_scoped_findings(findings: List[Dict[str, Any]], requirement_assessment: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Discard findings that review the broader project instead of this mission."""
+    domains = set(requirement_assessment.get("detected_domains", []))
+    if not domains or domains == {"unknown"}:
+        return [
+            finding for finding in findings
+            if _finding_material_to_unknown_mission(finding)
+        ]
+    return [
+        finding for finding in findings
+        if _finding_material_to_domains(finding, domains)
+    ]
+
+
+def _finding_material_to_unknown_mission(finding: Dict[str, Any]) -> bool:
+    if finding.get("status") == "SATISFIED":
+        return True
+    return finding.get("discipline") in {"Mission Analyst", "Tester"}
+
+
+def _finding_material_to_domains(finding: Dict[str, Any], domains: set) -> bool:
+    discipline = finding.get("discipline")
+    obligation = finding.get("obligation", "")
+    status = finding.get("status")
+
+    if status == "SATISFIED":
+        return True
+    if obligation in {"Technology stack identified", "Implementation technology identified", "Runtime selection confirmed"}:
+        return False
+    if obligation == "Deployment environment identified":
+        return "infra" in domains
+    if obligation == "Operational readiness considered":
+        return "infra" in domains
+    if discipline == "SecOps":
+        return bool({"api", "security"}.intersection(domains))
+    if discipline == "UX":
+        return "ui" in domains
+    if obligation in {"API contract identified", "HTTP endpoint contract identified"}:
+        return "api" in domains
+    if discipline == "Architect":
+        return bool({"api", "infra"}.intersection(domains))
+    if discipline == "Developer":
+        return False
+    if discipline == "DevOps":
+        return "infra" in domains
+    if discipline == "SRE":
+        return "infra" in domains
+    return discipline in {"Mission Analyst", "Tester"}
 
 
 def _constraints(ledger: Dict[str, Any], category: str = "") -> List[Dict[str, Any]]:
@@ -745,7 +795,7 @@ def assess(workspace: Path) -> Dict[str, Any]:
     classification = classify_mission(mission, ledger, _attribute_catalog(workspace))
     attribute_sources = _attribute_sources_from_classification(classification)
     attributes = sorted(classification["detected_attributes"])
-    findings = evaluate_obligations(mission, ledger, attributes)
+    findings = _mission_scoped_findings(evaluate_obligations(mission, ledger, attributes), requirement_assessment)
     categorized_risks = _categorized_risks(ledger)
     readiness = _readiness(ledger, findings, categorized_risks["open"])
     recommendation = _recommendation(ledger, findings, readiness)
