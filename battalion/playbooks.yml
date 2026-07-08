@@ -1,0 +1,344 @@
+missionTypes:
+  api:
+    endpoint: {}
+  data:
+    model: {}
+  ui:
+    component: {}
+  infrastructure:
+    deployment: {}
+  testing:
+    automated: {}
+  documentation:
+    readme: {}
+    adr: {}
+    open_knowledge: {}
+
+playbooks:
+  api.endpoint:
+    parent: api
+    subtype: endpoint
+    description: API endpoint work
+    keywords:
+      - endpoint
+      - route
+      - api
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+    leadingQuestions:
+      - id: request_response_contract
+        question: What request and response contract should the endpoint use?
+        examples:
+          - Request parameters
+          - Response fields
+          - Status codes
+      - id: authorization
+        question: What authorization rules apply to this endpoint?
+        examples:
+          - Administrators only
+          - Current user only
+          - Public endpoint
+      - id: error_behavior
+        question: What error behavior should be implemented?
+        examples:
+          - Not found
+          - Invalid input
+          - Unauthorized
+    defaultAssumptions:
+      - Existing API conventions apply.
+      - Existing authentication middleware applies unless the requirement says otherwise.
+    outOfScope:
+      - ui
+      - infrastructure
+
+  data.model:
+    parent: data
+    subtype: model
+    description: Data model work
+    keywords:
+      - table
+      - column
+      - schema
+      - migration
+      - model
+      - entity
+      - database
+    leadingQuestions:
+      - id: entity
+        question: Which entity, table, or model is being changed?
+        examples:
+          - Customer
+          - Account
+          - Order
+      - id: fields_relationships
+        question: Which fields or relationships should change?
+        examples:
+          - Add EmailAddress
+          - Add foreign key
+          - Rename field
+      - id: migration_backfill
+        question: Are migration or backfill steps required?
+        examples:
+          - No backfill
+          - Backfill from existing data
+          - Manual migration
+      - id: constraints_defaults
+        question: What constraints or defaults apply?
+        examples:
+          - Nullable
+          - Required
+          - Default value
+    defaultAssumptions:
+      - Existing database migration conventions apply.
+    outOfScope:
+      - api
+      - ui
+      - infrastructure
+
+  ui.component:
+    parent: ui
+    subtype: component
+    description: UI component work
+    keywords:
+      - UI
+      - UX
+      - component
+      - page
+      - screen
+      - button
+      - form
+      - modal
+    leadingQuestions:
+      - id: interaction
+        question: What user interaction should this component support?
+        examples:
+          - Click
+          - Submit
+          - Navigate
+      - id: states
+        question: What visual or behavioral states are required?
+        examples:
+          - Loading
+          - Empty
+          - Error
+      - id: data_dependency
+        question: What data does the component need?
+        examples:
+          - Existing props
+          - API data
+          - Static content
+      - id: accessibility_validation
+        question: What accessibility or validation behavior matters?
+        examples:
+          - Keyboard navigation
+          - Form validation
+          - ARIA labels
+    defaultAssumptions:
+      - Existing design system and UI conventions apply.
+    outOfScope:
+      - data
+      - infrastructure
+
+  infrastructure.deployment:
+    parent: infrastructure
+    subtype: deployment
+    description: Deployment work
+    keywords:
+      - deploy
+      - deployment
+      - docker
+      - container
+      - kubernetes
+      - helm
+      - app service
+      - environment
+    leadingQuestions:
+      - id: target_environment
+        question: What target environment should receive this deployment?
+        examples:
+          - Azure App Service
+          - Kubernetes
+          - Docker host
+      - id: deployment_artifact
+        question: What deployment artifact should be produced?
+        examples:
+          - Container image
+          - Manifest
+          - Pipeline configuration
+      - id: rollback
+        question: What rollback behavior is required?
+        examples:
+          - Manual rollback
+          - Previous image
+          - Not required
+      - id: configuration_secrets
+        question: What configuration or secrets are required?
+        examples:
+          - Environment variables
+          - Secret references
+          - Existing configuration
+    defaultAssumptions:
+      - Existing deployment conventions apply unless the requirement states otherwise.
+    outOfScope:
+      - api
+      - ui
+      - data
+
+  testing.automated:
+    parent: testing
+    subtype: automated
+    description: Automated testing work
+    keywords:
+      - test
+      - tests
+      - unit test
+      - integration test
+      - automated test
+      - test suite
+    leadingQuestions:
+      - id: test_type
+        question: What type of automated tests should be created?
+        examples:
+          - Unit tests
+          - Integration tests
+          - End-to-end tests
+      - id: behavior_under_test
+        question: What behavior should the tests validate?
+        examples:
+          - Happy path
+          - Error path
+          - Regression case
+      - id: test_location
+        question: Where should the tests live?
+        examples:
+          - Existing test project
+          - Adjacent to source
+          - Dedicated test directory
+    defaultAssumptions:
+      - Existing test framework and repository conventions apply.
+    outOfScope:
+      - ui
+      - infrastructure
+
+  documentation.readme:
+    parent: documentation
+    subtype: readme
+    description: README documentation work
+    keywords:
+      - README
+      - README.md
+    leadingQuestions:
+      - id: purpose
+        question: What is the intent of this README?
+        examples:
+          - Initialize repository with blank README
+          - Provide install instructions
+          - Provide project overview
+          - Document usage
+      - id: audience
+        question: Who is the intended audience?
+        examples:
+          - Internal developers
+          - External users
+          - Operators
+      - id: content_depth
+        question: Should this be blank, lightweight, or detailed?
+        examples:
+          - Blank
+          - Lightweight template
+          - Detailed project documentation
+    defaultAssumptions:
+      - No application code changes are required.
+      - No API, UI, data, or infrastructure changes are required unless documentation content requires them.
+    outOfScope:
+      - api
+      - data
+      - ui
+      - infrastructure
+
+  documentation.adr:
+    parent: documentation
+    subtype: adr
+    description: Architecture decision record work
+    keywords:
+      - ADR
+      - architecture decision record
+      - decision record
+      - choice
+    leadingQuestions:
+      - id: decision
+        question: What decision is being recorded?
+        examples:
+          - Runtime choice
+          - Architecture pattern
+          - Data storage approach
+      - id: context
+        question: What context led to this decision?
+        examples:
+          - Existing constraints
+          - Tradeoffs
+          - Operational needs
+      - id: options
+        question: What options were considered?
+        examples:
+          - Selected option
+          - Rejected alternatives
+          - Deferred options
+      - id: consequences
+        question: What consequences should the ADR capture?
+        examples:
+          - Benefits
+          - Risks
+          - Follow-up work
+    defaultAssumptions:
+      - The ADR records a decision and does not implement application behavior.
+    outOfScope:
+      - api
+      - ui
+      - data
+      - infrastructure
+
+  documentation.open_knowledge:
+    parent: documentation
+    subtype: open_knowledge
+    description: Open knowledge documentation work
+    keywords:
+      - open knowledge
+      - knowledge base
+      - knowledge framework
+      - OKF
+    leadingQuestions:
+      - id: topic
+        question: What knowledge topic should be documented?
+        examples:
+          - Engineering practice
+          - Operating model
+          - Product concept
+      - id: audience
+        question: Who is the intended audience?
+        examples:
+          - Internal developers
+          - External users
+          - Operators
+      - id: source_material
+        question: What source material should be used?
+        examples:
+          - Existing notes
+          - Repository docs
+          - Human-provided outline
+      - id: desired_structure
+        question: What structure should the knowledge artifact follow?
+        examples:
+          - Overview
+          - FAQ
+          - Step-by-step guide
+    defaultAssumptions:
+      - No application code changes are required.
+    outOfScope:
+      - api
+      - ui
+      - data
+      - infrastructure

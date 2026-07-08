@@ -34,13 +34,22 @@ python -m pytest
 
 Use `python -m pytest` instead of a globally installed `pytest` executable so the test runner uses the environment where Battalion and its dependencies were installed.
 
+## Versioning
+
+Battalion is pre-v1 software. Current releases use `0.x.y` versioning:
+
+- `0.MINOR.0` may introduce product workflow changes, command behavior changes, or artifact contract refinements.
+- `0.x.PATCH` is reserved for compatible fixes, documentation updates, and reliability improvements.
+- `1.0.0` will mark the first stable public workflow and artifact contract.
+
+Before v1, users should read the changelog before upgrading between minor versions.
+
 ## Core workflow
 
 The primary workflow is:
 
 ```bash
-battalion init
-battalion assess
+battalion assess --requirement "Describe the mission"
 battalion clarify
 battalion assess
 battalion plan
@@ -82,52 +91,56 @@ Multiline YAML values, such as mission prompts, are written as readable block sc
 
 ## Commands
 
-### `battalion init`
-
-Initializes a mission workspace.
-
-```bash
-battalion init \
-  --title "Health API" \
-  --objective "Build a REST API health endpoint." \
-  --prompt "Build a production-ready REST API that exposes a single application health endpoint."
-```
-
-`init` creates the mission record, standing team record, attribute catalog, ledger, audit file, and reports directory. The mission prompt is authoritative and remains immutable mission input.
-
 ### `battalion assess`
 
-Evaluates whether the mission is ready for the next engineering activity.
+Evaluates whether Battalion understands the mission well enough to create a reliable execution plan.
 
 ```bash
 battalion assess
 ```
 
-Assessment may generate or refresh the mission contract from the mission prompt. It produces:
+You can also assess a requirement directly, either inline or from a file:
+
+```bash
+battalion assess --requirement "Create an API endpoint to retrieve customer email."
+battalion assess --requirement ./story.md
+```
+
+For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, `assess --requirement` initializes one from the supplied requirement and then writes assessment artifacts.
+
+Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces internal artifacts for later Battalion phases:
 
 - `.battalion/assessment.json`
 - `.battalion/assessment.md`
 
-Assessment reports:
+The CLI output is intentionally limited to mission assessment:
 
-- mission classification;
-- generated requirements;
-- acceptance criteria;
-- constraints;
+- assessment outcome: `UNDERSTOOD`, `PROCEED_WITH_ASSUMPTIONS`, or `CLARIFICATION_REQUIRED`;
+- mission type selected from deterministic playbooks;
+- mission intent;
 - assumptions;
-- risks;
-- open clarifications;
-- engineering readiness;
-- recommended next action.
+- blocking ambiguity;
+- minimal playbook questions;
+- recommendation to proceed to planning or clarify before planning.
 
-Readiness values are:
+Assessment does not report implementation readiness, engineering obligations, mission assurance, deployment posture, runtime selection, framework selection, or approval to implement. Those belong to planning and assurance.
 
-- `NOT_READY`
-- `PARTIALLY_READY`
-- `READY_WITH_RISK`
-- `READY`
+Assessment does not generate code, execute work, dispatch executors, approve the mission, or recommend implementation.
 
-Assessment does not generate code, execute work, dispatch executors, or approve the mission.
+Battalion asks clarification questions only when the answer materially changes implementation, verification, or mission outcome. Small slices such as documentation updates, data-only migrations, or focused UI changes should not be treated as full-stack missions.
+
+Assessment is driven by packaged mission playbooks. The MVP playbooks cover:
+
+- `api.endpoint`
+- `data.model`
+- `ui.component`
+- `infrastructure.deployment`
+- `testing.automated`
+- `documentation.readme`
+- `documentation.adr`
+- `documentation.open_knowledge`
+
+If multiple playbooks match equally, Assessment asks one concise mission-type clarification before planning.
 
 Use interactive assessment only when you explicitly want assessment to collect clarification answers:
 
@@ -537,7 +550,7 @@ Avoid globally installed `pytest` executables that use a different Python enviro
 
 ### Command cannot find a mission
 
-Run `battalion init` in the current directory or navigate to a directory containing `.battalion`.
+Run `battalion assess --requirement "Describe the mission"` in the current directory or navigate to a directory containing `.battalion`.
 
 ### Planning says the mission is not ready
 

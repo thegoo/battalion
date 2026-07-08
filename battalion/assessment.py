@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+import yaml
+
 from .classification import AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
 from .storage import read_yaml
 
@@ -14,6 +16,10 @@ ENGINEERING_COMPATIBILITY_DISCLAIMER = (
     "Framework, SDK, runtime, library, package, platform, and standards versions must always be validated by the human engineering team for compatibility during implementation, testing, and assurance."
 )
 READINESS_LEVELS = ("NOT_READY", "PARTIALLY_READY", "READY_WITH_RISK", "READY")
+ASSESSMENT_OUTCOMES = ("UNDERSTOOD", "PROCEED_WITH_ASSUMPTIONS", "CLARIFICATION_REQUIRED")
+MISSION_DOMAINS = ("api", "data", "ui", "infra", "security", "documentation", "testing", "unknown")
+MISSION_SCALES = ("task", "slice", "user_story", "feature", "epic", "unknown")
+PLAYBOOKS_PATH = Path(__file__).with_name("playbooks.yml")
 RECOMMENDATIONS = (
     "Resolve Clarifications",
     "Refine Requirements",
@@ -245,6 +251,434 @@ def _text(value: Any) -> str:
 
 def _contains(text: str, pattern: str) -> bool:
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
+def load_mission_playbooks(path: Path = None) -> Dict[str, Any]:
+    target = path or PLAYBOOKS_PATH
+    try:
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"cannot read {target.name}: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("playbooks"), dict):
+        raise ValueError("playbooks.yml must contain a playbooks mapping.")
+    return data
+
+
+def classify_requirement_playbook(requirement: str, catalog: Dict[str, Any] = None) -> Dict[str, Any]:
+    catalog = catalog or load_mission_playbooks()
+    playbooks = catalog.get("playbooks", {})
+    text = requirement.lower()
+    matches = []
+    for key in sorted(playbooks):
+        playbook = playbooks[key]
+        keywords = playbook.get("keywords", []) if isinstance(playbook, dict) else []
+        matched = []
+        for keyword in keywords:
+            if _keyword_matches(text, str(keyword)):
+                matched.append(str(keyword))
+        if matched:
+            matches.append({
+                "key": key,
+                "hit_count": len(matched),
+                "matched_keywords": matched,
+                "playbook": playbook,
+            })
+    if not matches:
+        return {
+            "status": "unclassified",
+            "key": "unknown.unknown",
+            "parent": "unknown",
+            "subtype": "unknown",
+            "display": "Unknown / Unknown",
+            "description": "Unknown mission work",
+            "hit_count": 0,
+            "matched_keywords": [],
+            "tie_candidates": [],
+            "playbook": {},
+        }
+    matches.sort(key=lambda item: (-item["hit_count"], item["key"]))
+    strongest = matches[0]["hit_count"]
+    strongest_matches = [item for item in matches if item["hit_count"] == strongest]
+    if len(strongest_matches) > 1:
+        return {
+            "status": "tie",
+            "key": "ambiguous.ambiguous",
+            "parent": "ambiguous",
+            "subtype": "ambiguous",
+            "display": "Ambiguous Mission Type",
+            "description": "Multiple mission playbooks matched equally.",
+            "hit_count": strongest,
+            "matched_keywords": sorted({keyword for item in strongest_matches for keyword in item["matched_keywords"]}),
+            "tie_candidates": [item["key"] for item in strongest_matches],
+            "playbook": {},
+        }
+    selected = matches[0]
+    parent, subtype = selected["key"].split(".", 1)
+    playbook = selected["playbook"]
+    return {
+        "status": "classified",
+        "key": selected["key"],
+        "parent": parent,
+        "subtype": subtype,
+        "display": f"{_title_label(parent)} / {_title_label(subtype)}",
+        "description": playbook.get("description", selected["key"]),
+        "hit_count": selected["hit_count"],
+        "matched_keywords": selected["matched_keywords"],
+        "tie_candidates": [],
+        "playbook": playbook,
+    }
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    lowered = keyword.lower()
+    if re.search(r"[^a-z0-9_ ]", lowered):
+        return lowered in text
+    return re.search(rf"\b{re.escape(lowered)}\b", text, flags=re.IGNORECASE) is not None
+
+
+def _title_label(value: str) -> str:
+    labels = {
+        "api": "API",
+        "ui": "UI",
+        "adr": "ADR",
+        "readme": "README",
+        "open_knowledge": "Open Knowledge",
+        "infrastructure": "Infrastructure",
+        "deployment": "Deployment",
+        "endpoint": "Endpoint",
+        "data": "Data",
+        "model": "Model",
+        "documentation": "Documentation",
+        "testing": "Testing",
+        "automated": "Automated",
+    }
+    return labels.get(value, value.replace("_", " ").title())
+
+
+def assess_requirement_text(requirement: str) -> Dict[str, Any]:
+    """Produce the concise v1 requirement-understanding model.
+
+    This deliberately answers a narrower question than full Mission Assurance:
+    does Battalion understand this requirement well enough to proceed to planning?
+    The model is deterministic and asks only material implementation or
+    verification questions.
+    """
+    text = requirement.strip()
+    playbook_match = classify_requirement_playbook(text)
+    domains = _detect_requirement_domains(text)
+    if playbook_match["parent"] == "infrastructure":
+        domains = ["infra"] + [domain for domain in domains if domain != "infra"]
+    elif playbook_match["parent"] not in {"unknown", "ambiguous"}:
+        mapped_parent = "infra" if playbook_match["parent"] == "infrastructure" else playbook_match["parent"]
+        domains = [mapped_parent] + [domain for domain in domains if domain != mapped_parent]
+    scale = _detect_requirement_scale(text, domains)
+    understanding = _requirement_understanding(text, domains, playbook_match)
+    assumptions = _requirement_assumptions(text, domains, playbook_match)
+    questions = _playbook_questions(text, playbook_match) + _material_questions(text, domains)
+    questions = _dedupe(questions)
+    out_of_scope = _playbook_out_of_scope(playbook_match) or _out_of_scope_domains(domains)
+
+    if playbook_match["status"] == "tie":
+        outcome = "CLARIFICATION_REQUIRED"
+        confidence = "medium"
+        questions = [f"Which mission type applies: {', '.join(playbook_match['tie_candidates'])}?"]
+        recommendation = "Answer mission questions before planning."
+    elif questions:
+        outcome = "CLARIFICATION_REQUIRED"
+        confidence = "high" if playbook_match["status"] == "classified" else ("medium" if domains != ["unknown"] else "low")
+        recommendation = "Answer mission questions before planning."
+    elif assumptions:
+        outcome = "PROCEED_WITH_ASSUMPTIONS"
+        confidence = "high" if domains != ["unknown"] else "medium"
+        recommendation = "Proceed to planning."
+    else:
+        outcome = "UNDERSTOOD"
+        confidence = "high" if domains != ["unknown"] else "medium"
+        recommendation = "Proceed to planning."
+
+    if not text:
+        outcome = "CLARIFICATION_REQUIRED"
+        confidence = "low"
+        understanding = []
+        questions = ["What requirement should Battalion assess?"]
+        recommendation = "Provide a requirement before planning."
+
+    return {
+        "outcome": outcome,
+        "confidence": confidence,
+        "mission_type": {
+            "key": playbook_match["key"],
+            "parent": playbook_match["parent"],
+            "subtype": playbook_match["subtype"],
+            "display": playbook_match["display"],
+            "description": playbook_match["description"],
+            "hit_count": playbook_match["hit_count"],
+            "matched_keywords": playbook_match["matched_keywords"],
+            "tie_candidates": playbook_match["tie_candidates"],
+        },
+        "mission_intent": _mission_intent(text, playbook_match),
+        "understanding": understanding,
+        "detected_scale": scale,
+        "detected_domains": domains,
+        "assumptions": assumptions,
+        "blocking_ambiguities": questions,
+        "questions": questions,
+        "out_of_scope": out_of_scope,
+        "recommendation": recommendation,
+    }
+
+
+def _detect_requirement_domains(text: str) -> List[str]:
+    checks = [
+        ("api", r"\b(endpoint|api|route|get|post|put|patch|delete|http|rest)\b"),
+        ("data", r"\b(database|schema|migration|column|entity|model|table|sql)\b"),
+        ("ui", r"\b(screen|page|form|button|ux|ui|modal|frontend|react|view)\b"),
+        ("infra", r"\b(deploy|deployment|docker|container|kubernetes|terraform|pipeline|infrastructure|hosting|azure app service|app service)\b"),
+        ("security", r"\b(auth|jwt|oauth|permission|security|encrypt|secret|owasp|authorization|authentication)\b"),
+        ("documentation", r"\b(documentation|readme|markdown|docs?|installation instructions)\b"),
+        ("testing", r"\b(test|tests|testing|spec|validation|happy-path|negative-path|malicious)\b"),
+    ]
+    domains = [domain for domain, pattern in checks if _contains(text, pattern)]
+    return domains or ["unknown"]
+
+
+def _detect_requirement_scale(text: str, domains: List[str]) -> str:
+    if _contains(text, r"\b(epic|program|platform|multi[- ]team|roadmap)\b"):
+        return "epic"
+    if _contains(text, r"\b(feature|capability|module)\b"):
+        return "feature"
+    if _contains(text, r"\bas a\b.+\bi want\b|\buser story\b"):
+        return "user_story"
+    if _contains(text, r"\b(endpoint|column|readme|button|modal|migration|bug|fix|update|add|create)\b"):
+        return "slice" if len(domains) > 1 and "unknown" not in domains else "task"
+    return "unknown"
+
+
+def _requirement_understanding(text: str, domains: List[str], playbook_match: Dict[str, Any] = None) -> List[str]:
+    playbook_match = playbook_match or {}
+    values = []
+    if playbook_match.get("status") == "classified":
+        values.append(_mission_intent(text, playbook_match))
+    if "api" in domains:
+        values.append("Backend API enhancement")
+        if _contains(text, r"\bretrieve|read|get\b") and not _contains(text, r"\bpost|put|patch|delete|create|update|remove\b"):
+            values.append("Read-only endpoint")
+    if "data" in domains:
+        values.append("Data/schema change")
+    if "ui" in domains:
+        values.append("User interface change")
+    if "documentation" in domains:
+        if _contains(text, r"\breadme(?:\.md)?\b") and _contains(text, r"\bcreate\b"):
+            values.append("Create a README documentation artifact.")
+        else:
+            values.append("Documentation update")
+    if "infra" in domains:
+        values.append("Infrastructure or deployment change")
+    if "testing" in domains:
+        values.append("Testing or validation work")
+    if "security" in domains:
+        values.append("Security-sensitive behavior")
+    if "ui" not in domains:
+        values.append("No UI detected")
+    return _dedupe(values) or ["Requirement type is not yet classified"]
+
+
+def _requirement_assumptions(text: str, domains: List[str], playbook_match: Dict[str, Any] = None) -> List[str]:
+    playbook_match = playbook_match or {}
+    assumptions = []
+    playbook = playbook_match.get("playbook", {}) if isinstance(playbook_match.get("playbook"), dict) else {}
+    assumptions.extend(playbook.get("defaultAssumptions", []) if isinstance(playbook.get("defaultAssumptions"), list) else [])
+    if "api" in domains:
+        assumptions.append("Existing API conventions apply.")
+        if _contains(text, r"\bcustomer|user|account|order|email\b"):
+            assumptions.append("Existing data model contains the referenced field or entity.")
+        if not _contains(text, r"\bpublic|anonymous|unauthenticated|no auth\b") and not any("authentication middleware applies" in item for item in assumptions):
+            assumptions.append("Existing authentication middleware applies.")
+    if "data" in domains:
+        assumptions.append("Existing database migration conventions apply.")
+    if "ui" in domains:
+        assumptions.append("Existing design system and UI conventions apply.")
+    return _dedupe(assumptions)
+
+
+def _playbook_questions(text: str, playbook_match: Dict[str, Any]) -> List[str]:
+    playbook = playbook_match.get("playbook", {}) if isinstance(playbook_match.get("playbook"), dict) else {}
+    questions = []
+    for item in playbook.get("leadingQuestions", []) if isinstance(playbook.get("leadingQuestions"), list) else []:
+        question_id = item.get("id")
+        if _playbook_question_answered(text, playbook_match, question_id):
+            continue
+        question = item.get("question")
+        if not question:
+            continue
+        examples = item.get("examples", [])
+        if isinstance(examples, list) and examples:
+            questions.append(f"{question} Examples: {', '.join(str(example) for example in examples)}.")
+        else:
+            questions.append(question)
+    return questions
+
+
+def _playbook_question_answered(text: str, playbook_match: Dict[str, Any], question_id: str) -> bool:
+    key = playbook_match.get("key")
+    if key == "documentation.readme":
+        if _contains(text, r"\bblank\b|\binitiali[sz]e\b|\boverview\b|\binstall(?:ation)?\b|\busage\b"):
+            return True
+        if question_id == "audience" and _contains(text, r"\binternal|external|developer|user|operator|public\b"):
+            return True
+        return False
+    if key == "api.endpoint":
+        if question_id == "request_response_contract":
+            return (
+                _contains(text, r"\bGET|POST|PUT|PATCH|DELETE\b") and _contains(text, r"/[a-z0-9_/{}/.-]+")
+            ) or _contains(text, r"\bretrieve|return|get\b") and _contains(text, r"\bemail|status|health|json|response\b")
+        if question_id == "authorization":
+            return True
+        if question_id == "error_behavior":
+            return True
+    if key == "data.model":
+        if question_id == "entity":
+            return _contains(text, r"\bcustomer|user|account|order|table|entity|model\b")
+        if question_id == "fields_relationships":
+            return _contains(text, r"\bcolumn|field|relationship|emailaddress|email\b")
+        if question_id in {"migration_backfill", "constraints_defaults"}:
+            return True
+    if key == "ui.component":
+        if question_id == "interaction":
+            return _contains(text, r"\bstyling|style|button|form|modal|page|component\b")
+        if question_id in {"states", "data_dependency", "accessibility_validation"}:
+            return True
+    if key == "infrastructure.deployment":
+        if question_id == "target_environment":
+            return _contains(text, r"\bazure app service|app service|kubernetes|docker|container|environment\b")
+        if question_id in {"deployment_artifact", "rollback", "configuration_secrets"}:
+            return False
+    if key == "testing.automated":
+        if question_id == "test_type":
+            return _contains(text, r"\bunit test|integration test|e2e|end[- ]to[- ]end|test suite\b")
+        if question_id == "behavior_under_test":
+            return _contains(text, r"\bfor|validate|verify|regression|happy|negative|failure\b")
+        return False
+    if key == "documentation.adr":
+        if question_id == "decision":
+            return _contains(text, r"\badr\b|\bdecision\b")
+        return False
+    if key == "documentation.open_knowledge":
+        if question_id == "topic":
+            return _contains(text, r"\bopen knowledge|knowledge base|knowledge framework|okf\b")
+        return False
+    return False
+
+
+def _playbook_out_of_scope(playbook_match: Dict[str, Any]) -> List[str]:
+    playbook = playbook_match.get("playbook", {}) if isinstance(playbook_match.get("playbook"), dict) else {}
+    values = playbook.get("outOfScope", [])
+    if not isinstance(values, list):
+        return []
+    return ["infra" if value == "infrastructure" else value for value in values]
+
+
+def _mission_intent(text: str, playbook_match: Dict[str, Any]) -> str:
+    key = playbook_match.get("key")
+    if key == "documentation.readme":
+        if _contains(text, r"\bblank\b") and _contains(text, r"\binitiali[sz]e\b|\brepo(?:sitory)?\b"):
+            return "Create a blank README.md file to initialize the repository."
+        return "Create a README.md file."
+    if key == "api.endpoint":
+        return "Create or update the requested API endpoint."
+    if key == "data.model":
+        return "Create or update the requested data model change."
+    if key == "ui.component":
+        return "Create or update the requested UI component."
+    if key == "infrastructure.deployment":
+        return "Create or update the requested deployment capability."
+    if key == "testing.automated":
+        return "Create or update the requested automated tests."
+    if key == "documentation.adr":
+        return "Create or update the requested architecture decision record."
+    if key == "documentation.open_knowledge":
+        return "Create or update the requested open knowledge artifact."
+    if playbook_match.get("status") == "tie":
+        return "Clarify which mission type should govern this work."
+    return text or "Mission intent is not yet understood."
+
+
+def _dedupe(values: List[str]) -> List[str]:
+    result = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _material_questions(text: str, domains: List[str]) -> List[str]:
+    questions = []
+    if _contains(text, r"\bsearch\b"):
+        if not _contains(text, r"\bexact|partial|fuzzy|full[- ]text\b"):
+            questions.append("Should search be exact, partial, fuzzy, or full text?")
+        if not _contains(text, r"\b(name|email|id|phone|address|field|fields)\b"):
+            questions.append("Which fields should customer search include?" if _contains(text, r"\bcustomer\b") else "Which fields should search include?")
+    if "unknown" in domains and _contains(text, r"\badd|create|build|implement|update\b") and len(text.split()) <= 4:
+        questions.append("What behavior should be implemented or changed?")
+    return questions
+
+
+def _out_of_scope_domains(domains: List[str]) -> List[str]:
+    values = []
+    for domain in ("api", "data", "ui", "infra"):
+        if domain not in domains and domains != ["unknown"]:
+            values.append(domain)
+    return values
+
+
+def _mission_scoped_findings(findings: List[Dict[str, Any]], requirement_assessment: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Discard findings that review the broader project instead of this mission."""
+    domains = set(requirement_assessment.get("detected_domains", []))
+    if not domains or domains == {"unknown"}:
+        return [
+            finding for finding in findings
+            if _finding_material_to_unknown_mission(finding)
+        ]
+    return [
+        finding for finding in findings
+        if _finding_material_to_domains(finding, domains)
+    ]
+
+
+def _finding_material_to_unknown_mission(finding: Dict[str, Any]) -> bool:
+    if finding.get("status") == "SATISFIED":
+        return True
+    return finding.get("discipline") in {"Mission Analyst", "Tester"}
+
+
+def _finding_material_to_domains(finding: Dict[str, Any], domains: set) -> bool:
+    discipline = finding.get("discipline")
+    obligation = finding.get("obligation", "")
+    status = finding.get("status")
+
+    if status == "SATISFIED":
+        return True
+    if obligation in {"Technology stack identified", "Implementation technology identified", "Runtime selection confirmed"}:
+        return False
+    if obligation == "Deployment environment identified":
+        return "infra" in domains
+    if obligation == "Operational readiness considered":
+        return "infra" in domains
+    if discipline == "SecOps":
+        return bool({"api", "security"}.intersection(domains))
+    if discipline == "UX":
+        return "ui" in domains
+    if obligation in {"API contract identified", "HTTP endpoint contract identified"}:
+        return "api" in domains
+    if discipline == "Architect":
+        return bool({"api", "infra"}.intersection(domains))
+    if discipline == "Developer":
+        return False
+    if discipline == "DevOps":
+        return "infra" in domains
+    if discipline == "SRE":
+        return "infra" in domains
+    return discipline in {"Mission Analyst", "Tester"}
 
 
 def _constraints(ledger: Dict[str, Any], category: str = "") -> List[Dict[str, Any]]:
@@ -600,10 +1034,13 @@ def _mission_summary(mission: Dict[str, Any], ledger: Dict[str, Any], attributes
 def assess(workspace: Path) -> Dict[str, Any]:
     mission = read_yaml(workspace / "mission.yaml")
     ledger = read_yaml(workspace / "ledger.yaml")
+    requirement_assessment = assess_requirement_text(
+        mission.get("mission_prompt") or mission.get("original_prompt") or ledger.get("mission_prompt") or ""
+    )
     classification = classify_mission(mission, ledger, _attribute_catalog(workspace))
     attribute_sources = _attribute_sources_from_classification(classification)
     attributes = sorted(classification["detected_attributes"])
-    findings = evaluate_obligations(mission, ledger, attributes)
+    findings = _mission_scoped_findings(evaluate_obligations(mission, ledger, attributes), requirement_assessment)
     categorized_risks = _categorized_risks(ledger)
     readiness = _readiness(ledger, findings, categorized_risks["open"])
     recommendation = _recommendation(ledger, findings, readiness)
@@ -626,6 +1063,10 @@ def assess(workspace: Path) -> Dict[str, Any]:
             "prompt": mission.get("mission_prompt") or mission.get("original_prompt"),
         },
         "mission_summary": _mission_summary(mission, ledger, attributes),
+        "assessment_outcome": requirement_assessment["outcome"],
+        "confidence": requirement_assessment["confidence"],
+        "planning_may_proceed": requirement_assessment["outcome"] in {"UNDERSTOOD", "PROCEED_WITH_ASSUMPTIONS"},
+        "requirement_assessment": requirement_assessment,
         "readiness": readiness,
         "readiness_reason": readiness_reason,
         "recommendation": recommendation,
@@ -697,6 +1138,7 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
     ]
     summary = assessment.get("engineering_obligation_summary", {})
     mission = assessment.get("mission", {})
+    requirement_assessment = assessment.get("requirement_assessment", {})
     return f"""# Battalion Mission Assessment
 
 ## Mission
@@ -704,11 +1146,35 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
 - **ID:** {mission.get('id', '—')}
 - **Title:** {mission.get('title', '—')}
 - **Objective:** {mission.get('objective', '—')}
-- **Prompt:** {mission.get('prompt', '—')}
+- **Requirement:** {mission.get('prompt', '—')}
 
 ## Assessment Summary
 
 {assessment.get('mission_summary', '—')}
+
+## Requirement Assessment
+
+- **Outcome:** {assessment.get('assessment_outcome', '—')}
+- **Confidence:** {assessment.get('confidence', '—')}
+- **Detected scale:** {requirement_assessment.get('detected_scale', '—')}
+- **Detected domains:** {', '.join(requirement_assessment.get('detected_domains', [])) or '—'}
+- **Planning may proceed:** {'yes' if assessment.get('planning_may_proceed') else 'no'}
+
+### Understanding
+
+{bullet(requirement_assessment.get('understanding', []))}
+
+### Assessment Assumptions
+
+{bullet(requirement_assessment.get('assumptions', []))}
+
+### Assessment Questions
+
+{bullet(requirement_assessment.get('questions', []))}
+
+### Assessment Out of Scope
+
+{bullet(requirement_assessment.get('out_of_scope', []))}
 
 ## Readiness
 

@@ -21,7 +21,7 @@ NO_MISSION_MESSAGE = """Current directory does not contain a Battalion mission.
 
 Run:
 
-  battalion init
+  battalion assess --requirement "Describe the mission"
 
 or navigate to a directory containing .battalion"""
 
@@ -54,6 +54,39 @@ def init(args, cwd):
     (workspace / "events.jsonl").touch()
     append_event(workspace, "mission_initialized", {"mission_id": "M-001"})
     print(f"Initialized Battalion mission at {workspace}")
+
+
+def initialize_mission_workspace(cwd: Path, mission_prompt: str, title: str = None, objective: str = None):
+    workspace = root(cwd)
+    workspace.mkdir()
+    (workspace / "reports").mkdir()
+    objective = objective or mission_prompt
+    title = title or objective
+    write_yaml(workspace / "mission.yaml", {
+        "id": "M-001",
+        "title": title,
+        "objective": objective,
+        "mission_prompt": mission_prompt,
+        "original_prompt": mission_prompt,
+        "status": "initialized",
+        "created_at": timestamp(),
+        "doctrine": DOCTRINE,
+    })
+    write_yaml(workspace / "agents.yaml", standing_team())
+    write_default_attribute_catalog(workspace / "attributes.yml")
+    write_yaml(workspace / "ledger.yaml", {"mission_id": "M-001", "mission_prompt": mission_prompt, "requirements": [], "assumptions": [], "risks": []})
+    (workspace / "events.jsonl").touch()
+    append_event(workspace, "mission_initialized", {"mission_id": "M-001"})
+    return workspace
+
+
+def read_requirement_input(value: str, cwd: Path) -> str:
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    if candidate.is_file():
+        return candidate.read_text(encoding="utf-8").strip()
+    return value.strip()
 
 
 def plan(args, cwd):
@@ -785,7 +818,28 @@ def status(args, cwd):
 
 
 def assessment(args, cwd):
-    workspace = workspace_or_exit(cwd)
+    if args.requirement:
+        requirement = read_requirement_input(args.requirement, cwd)
+        if not requirement:
+            raise SystemExit("Requirement cannot be empty.")
+        workspace = root(cwd)
+        if not workspace.exists():
+            workspace = initialize_mission_workspace(cwd, requirement, title="Requirement Assessment", objective=requirement)
+        else:
+            ledger = read_yaml(workspace / "ledger.yaml")
+            if ledger.get("requirements"):
+                raise SystemExit("A mission contract already exists. Run battalion assess without --requirement to assess the current mission.")
+            mission = read_yaml(workspace / "mission.yaml")
+            mission["title"] = mission.get("title") or "Requirement Assessment"
+            mission["objective"] = requirement
+            mission["mission_prompt"] = requirement
+            mission.setdefault("original_prompt", requirement)
+            write_yaml(workspace / "mission.yaml", mission)
+            ledger["mission_prompt"] = requirement
+            write_yaml(workspace / "ledger.yaml", ledger)
+            append_event(workspace, "assessment_requirement_updated", {"mission_id": mission.get("id", "M-001")})
+    else:
+        workspace = workspace_or_exit(cwd)
     try:
         ensure_assessed_contract(workspace)
     except ValueError as exc:
@@ -798,38 +852,64 @@ def assessment(args, cwd):
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print_assessment_summary(result)
-    print(f"Assessment JSON: {workspace / 'assessment.json'}")
-    print(f"Assessment Report: {workspace / 'assessment.md'}")
 
 
 def print_assessment_summary(result):
-    print(f"Readiness: {result['readiness']}")
-    print(f"\nEngineering Compatibility Disclaimer\n- {result['engineering_compatibility_disclaimer']}")
-    print("\nMission Classification")
-    attributes = result.get("mission_classification", {}).get("attributes", [])
-    if not attributes:
-        print("- None")
-    for item in attributes:
-        evidence = ", ".join(
-            f"{entry.get('indicator', '—')} from {entry.get('source', '—')}"
-            for entry in item.get("classification_evidence", [])
-        ) or "None"
-        print(f"- {item.get('attribute', '—')}: {item.get('decision', 'not_classified')}; evidence [{evidence}]; hit count {item.get('hit_count', 0)}; threshold {item.get('threshold', 1)}")
-    print("\nPrimary Findings")
-    for finding in primary_assessment_findings(result):
-        print(f"- {finding}")
-    print("\nOutstanding Clarifications")
-    clarifications = result.get("outstanding_clarifications", [])
-    if clarifications:
-        for item in clarifications:
-            print(f"- {item.get('id', '—')}: {item.get('question', '—')}")
+    requirement_assessment = result.get("requirement_assessment", {})
+    print("Assessment Result")
+    print("-----------------")
+    print(result.get("assessment_outcome", result.get("readiness", "UNKNOWN")))
+    confidence = result.get("confidence", "—")
+    print(f"\nConfidence: {confidence.title() if isinstance(confidence, str) else confidence}")
+    mission_type = requirement_assessment.get("mission_type", {})
+    print("\nMission Type")
+    print(mission_type.get("display", "Unknown / Unknown"))
+    print("\nMission Intent")
+    print(requirement_assessment.get("mission_intent", "Mission intent is not yet understood."))
+    print("\nUnderstanding")
+    for item in requirement_assessment.get("understanding", []) or ["None"]:
+        print(f"- {item}")
+    questions = requirement_assessment.get("questions", [])
+    if not questions:
+        print("\nAssumptions")
+        for item in requirement_assessment.get("assumptions", []) or ["None"]:
+            print(f"- {item}")
+    print("\nQuestions")
+    if questions:
+        for index, item in enumerate(questions, start=1):
+            print(_format_assessment_question(index, item))
     else:
         print("- None")
-    print(f"\nRecommendation: {result['recommendation']}")
-    for reason in result.get("recommendation_reason", []):
-        print(f"- {reason}")
-    if clarifications:
-        print("\nRun:\n  battalion clarify")
+    print(f"\nRecommendation\n{requirement_assessment.get('recommendation', result.get('recommendation', '—'))}")
+
+
+def _assessment_display_label(value):
+    labels = {
+        "api": "API",
+        "ui": "UI",
+        "infra": "Infrastructure",
+        "data": "Data",
+        "documentation": "Documentation",
+        "testing": "Testing",
+        "security": "Security",
+        "unknown": "Unknown",
+        "task": "Task",
+        "slice": "Slice",
+        "user_story": "User Story",
+        "feature": "Feature",
+        "epic": "Epic",
+    }
+    if not isinstance(value, str):
+        return str(value)
+    return labels.get(value, value.replace("_", " ").title())
+
+
+def _format_assessment_question(index, item):
+    text = str(item)
+    if " Examples: " not in text:
+        return f"{index}. {text}"
+    question, examples = text.split(" Examples: ", 1)
+    return f"{index}. {question}\n   Examples: {examples}"
 
 
 def primary_assessment_findings(result):
@@ -1036,7 +1116,7 @@ def resolve(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.7.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -1063,6 +1143,7 @@ def parser():
     p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
     commands.add_parser("status")
     p = commands.add_parser("assess")
+    p.add_argument("--requirement", help="Requirement text or path to a requirement file to assess")
     p.add_argument("--interactive", action="store_true", help="Prompt for outstanding clarification answers during assessment")
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
     p = commands.add_parser("assure")
