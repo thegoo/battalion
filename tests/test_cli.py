@@ -989,7 +989,7 @@ class BattalionCliTests(unittest.TestCase):
         )
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError("interactive assess prompted without open clarifications")):
             output = self.run_cli("assess", "--interactive")
-        self.assertIn("Questions\n- None", output)
+        self.assertIn("Assessment Result", output)
 
     def test_plan_requires_assessment(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
@@ -1331,12 +1331,10 @@ class BattalionCliTests(unittest.TestCase):
         self.run_cli("assess")
         output = self.run_cli("assess")
         self.assertIn("Assessment Result", output)
-        self.assertIn("Detected Scale", output)
-        self.assertIn("Detected Domains", output)
+        self.assertIn("Mission Type", output)
+        self.assertIn("Mission Intent", output)
         self.assertIn("Understanding", output)
-        self.assertIn("Assumptions", output)
         self.assertIn("Questions", output)
-        self.assertIn("Out of Scope", output)
         self.assertIn("Recommendation\nProceed to planning.", output)
         self.assertNotIn("Readiness:", output)
         self.assertNotIn("Engineering Compatibility Disclaimer", output)
@@ -1404,7 +1402,7 @@ class BattalionCliTests(unittest.TestCase):
         self.run_cli("assess", "--requirement", str(story))
         assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(assessment["assessment_outcome"], "UNDERSTOOD")
+        self.assertEqual(assessment["assessment_outcome"], "PROCEED_WITH_ASSUMPTIONS")
         self.assertEqual(assessment["requirement_assessment"]["detected_domains"], ["documentation"])
         self.assertEqual(assessment["requirement_assessment"]["questions"], [])
 
@@ -1447,18 +1445,14 @@ class BattalionCliTests(unittest.TestCase):
     def test_assess_readme_cli_output_is_only_mission_assessment(self):
         output = self.run_cli("assess", "--requirement", "Create a README.md")
 
-        self.assertIn("Assessment Result\n-----------------\nUNDERSTOOD", output)
+        self.assertIn("Assessment Result\n-----------------\nCLARIFICATION_REQUIRED", output)
         self.assertIn("Confidence: High", output)
-        self.assertIn("Detected Scale\nTask", output)
-        self.assertIn("Detected Domains\n- Documentation", output)
-        self.assertIn("Understanding\n- Create a README documentation artifact.", output)
-        self.assertIn("Assumptions\n- None", output)
-        self.assertIn("Questions\n- None", output)
-        self.assertIn("Out of Scope\n- API", output)
-        self.assertIn("- Data", output)
-        self.assertIn("- UI", output)
-        self.assertIn("- Infrastructure", output)
-        self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
+        self.assertIn("Mission Type\nDocumentation / README", output)
+        self.assertIn("Mission Intent\nCreate a README.md file.", output)
+        self.assertIn("1. What is the intent of this README?", output)
+        self.assertIn("2. Who is the intended audience?", output)
+        self.assertIn("3. Should this be blank, lightweight, or detailed?", output)
+        self.assertTrue(output.strip().endswith("Recommendation\nAnswer mission questions before planning."))
         self.assertNotIn("Readiness", output)
         self.assertNotIn("Engineering Compatibility Disclaimer", output)
         self.assertNotIn("Mission Classification", output)
@@ -1468,13 +1462,25 @@ class BattalionCliTests(unittest.TestCase):
         self.assertNotIn("Deployment environment", output)
         self.assertNotIn("Architecture", output)
         self.assertNotIn("Engineering obligation", output)
+        self.assertNotIn("API", output)
+        self.assertNotIn("Data", output)
+        self.assertNotIn("Infrastructure", output)
+
+    def test_assess_blank_readme_does_not_ask_unnecessary_questions(self):
+        output = self.run_cli("assess", "--requirement", "Create a blank README.md to initialize the repo")
+
+        self.assertIn("Assessment Result\n-----------------\nPROCEED_WITH_ASSUMPTIONS", output)
+        self.assertIn("Mission Type\nDocumentation / README", output)
+        self.assertIn("Mission Intent\nCreate a blank README.md file to initialize the repository.", output)
+        self.assertIn("Questions\n- None", output)
+        self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
 
     def test_assess_api_cli_output_excludes_unrelated_later_phase_concerns(self):
         output = self.run_cli("assess", "--requirement", "Create GET /customers/{id}/email")
 
-        self.assertIn("Detected Domains\n- API", output)
+        self.assertIn("Mission Type\nAPI / Endpoint", output)
         self.assertIn("Existing data model contains the referenced field or entity.", output)
-        self.assertIn("Existing authentication middleware applies.", output)
+        self.assertIn("Existing authentication middleware applies unless the requirement says otherwise.", output)
         self.assertIn("Questions\n- None", output)
         self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
         self.assertNotIn("deployment", output.lower())
@@ -1482,6 +1488,50 @@ class BattalionCliTests(unittest.TestCase):
         self.assertNotIn("ci/cd", output.lower())
         self.assertNotIn("architecture", output.lower())
         self.assertNotIn("framework", output.lower())
+
+    def test_playbook_classifies_data_model_requirements(self):
+        output = self.run_cli("assess", "--requirement", "Add EmailAddress column to Customer.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Mission Type\nData / Model", output)
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "data.model")
+        self.assertIn("Questions\n- None", output)
+        self.assertNotIn("frontend", output.lower())
+
+    def test_playbook_classifies_deployment_requirements(self):
+        output = self.run_cli("assess", "--requirement", "Deploy application to Azure App Service.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Mission Type\nInfrastructure / Deployment", output)
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "infrastructure.deployment")
+        self.assertIn("What deployment artifact should be produced?", output)
+        self.assertIn("What rollback behavior is required?", output)
+
+    def test_playbook_classifies_adr_requirements(self):
+        output = self.run_cli("assess", "--requirement", "Create ADR for database choice.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Mission Type\nDocumentation / ADR", output)
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "documentation.adr")
+        self.assertIn("What context led to this decision?", output)
+
+    def test_playbook_classifies_open_knowledge_requirements(self):
+        output = self.run_cli("assess", "--requirement", "Create open knowledge framework overview.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Mission Type\nDocumentation / Open Knowledge", output)
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "documentation.open_knowledge")
+        self.assertIn("Who is the intended audience?", output)
+
+    def test_playbook_tie_returns_single_mission_type_clarification(self):
+        output = self.run_cli("assess", "--requirement", "Create README API")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Mission Type\nAmbiguous Mission Type", output)
+        self.assertEqual(assessment["assessment_outcome"], "CLARIFICATION_REQUIRED")
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["tie_candidates"], ["api.endpoint", "documentation.readme"])
+        self.assertEqual(len(assessment["requirement_assessment"]["questions"]), 1)
+        self.assertIn("Which mission type applies: api.endpoint, documentation.readme?", output)
 
     def mission_scoped_assessment(self, requirement):
         self.run_cli("assess", "--requirement", requirement)
@@ -1521,7 +1571,7 @@ class BattalionCliTests(unittest.TestCase):
 
         self.assertIn("api", assessment["requirement_assessment"]["detected_domains"])
         self.assertIn("Existing data model contains the referenced field or entity.", assessment["requirement_assessment"]["assumptions"])
-        self.assertIn("Existing authentication middleware applies.", assessment["requirement_assessment"]["assumptions"])
+        self.assertIn("Existing authentication middleware applies unless the requirement says otherwise.", assessment["requirement_assessment"]["assumptions"])
         self.assertNotIn("frontend", text.lower())
         self.assertNotIn("Deployment environment", text)
         self.assertEqual(assessment["requirement_assessment"]["questions"], [])

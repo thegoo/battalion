@@ -120,11 +120,11 @@ Assessment may generate or refresh the mission contract from the authoritative m
 The CLI output is intentionally limited to mission assessment:
 
 - assessment outcome: `UNDERSTOOD`, `PROCEED_WITH_ASSUMPTIONS`, or `CLARIFICATION_REQUIRED`;
-- detected scale and domains;
+- mission type selected from deterministic playbooks;
+- mission intent;
 - assumptions;
 - blocking ambiguity;
-- minimal clarification questions;
-- mission-scoped out-of-scope items;
+- minimal playbook questions;
 - recommendation to proceed to planning or clarify before planning.
 
 Assessment does not report implementation readiness, engineering obligations, mission assurance, deployment posture, runtime selection, framework selection, or approval to implement. Those belong to planning and assurance.
@@ -132,6 +132,19 @@ Assessment does not report implementation readiness, engineering obligations, mi
 Assessment does not generate code, execute work, dispatch executors, approve the mission, or recommend implementation.
 
 Battalion asks clarification questions only when the answer materially changes implementation, verification, or mission outcome. Small slices such as documentation updates, data-only migrations, or focused UI changes should not be treated as full-stack missions.
+
+Assessment is driven by packaged mission playbooks. The MVP playbooks cover:
+
+- `api.endpoint`
+- `data.model`
+- `ui.component`
+- `infrastructure.deployment`
+- `testing.automated`
+- `documentation.readme`
+- `documentation.adr`
+- `documentation.open_knowledge`
+
+If multiple playbooks match equally, Assessment asks one concise mission-type clarification before planning.
 
 Use interactive assessment only when you explicitly want assessment to collect clarification answers:
 

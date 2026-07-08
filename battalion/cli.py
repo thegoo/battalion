@@ -861,23 +861,25 @@ def print_assessment_summary(result):
     print(result.get("assessment_outcome", result.get("readiness", "UNKNOWN")))
     confidence = result.get("confidence", "—")
     print(f"\nConfidence: {confidence.title() if isinstance(confidence, str) else confidence}")
-    print("\nDetected Scale")
-    print(_assessment_display_label(requirement_assessment.get("detected_scale", "—")))
-    print("\nDetected Domains")
-    for domain in requirement_assessment.get("detected_domains", []) or ["unknown"]:
-        print(f"- {_assessment_display_label(domain)}")
+    mission_type = requirement_assessment.get("mission_type", {})
+    print("\nMission Type")
+    print(mission_type.get("display", "Unknown / Unknown"))
+    print("\nMission Intent")
+    print(requirement_assessment.get("mission_intent", "Mission intent is not yet understood."))
     print("\nUnderstanding")
     for item in requirement_assessment.get("understanding", []) or ["None"]:
         print(f"- {item}")
-    print("\nAssumptions")
-    for item in requirement_assessment.get("assumptions", []) or ["None"]:
-        print(f"- {item}")
+    questions = requirement_assessment.get("questions", [])
+    if not questions:
+        print("\nAssumptions")
+        for item in requirement_assessment.get("assumptions", []) or ["None"]:
+            print(f"- {item}")
     print("\nQuestions")
-    for item in requirement_assessment.get("questions", []) or ["None"]:
-        print(f"- {item}")
-    print("\nOut of Scope")
-    for item in requirement_assessment.get("out_of_scope", []) or ["None"]:
-        print(f"- {_assessment_display_label(item)}")
+    if questions:
+        for index, item in enumerate(questions, start=1):
+            print(_format_assessment_question(index, item))
+    else:
+        print("- None")
     print(f"\nRecommendation\n{requirement_assessment.get('recommendation', result.get('recommendation', '—'))}")
 
 
@@ -900,6 +902,14 @@ def _assessment_display_label(value):
     if not isinstance(value, str):
         return str(value)
     return labels.get(value, value.replace("_", " ").title())
+
+
+def _format_assessment_question(index, item):
+    text = str(item)
+    if " Examples: " not in text:
+        return f"{index}. {text}"
+    question, examples = text.split(" Examples: ", 1)
+    return f"{index}. {question}\n   Examples: {examples}"
 
 
 def primary_assessment_findings(result):
