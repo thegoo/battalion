@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -1378,6 +1378,64 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("from mission_prompt", markdown)
         self.assertIn("DATABASE", markdown)
         self.assertIn("classified: no", markdown)
+
+    def test_assess_requirement_inline_api_endpoint_proceeds_with_assumptions(self):
+        output = self.run_cli("assess", "--requirement", "Create an API endpoint to retrieve customer email by customer id.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertIn("PROCEED_WITH_ASSUMPTIONS", output)
+        self.assertEqual(assessment["assessment_outcome"], "PROCEED_WITH_ASSUMPTIONS")
+        self.assertEqual(assessment["requirement_assessment"]["detected_scale"], "task")
+        self.assertIn("api", assessment["requirement_assessment"]["detected_domains"])
+        self.assertIn("Existing API conventions apply.", assessment["requirement_assessment"]["assumptions"])
+        self.assertEqual(assessment["requirement_assessment"]["questions"], [])
+
+    def test_assess_requirement_file_input(self):
+        story = self.cwd / "story.md"
+        story.write_text("Update README with installation instructions.", encoding="utf-8")
+
+        self.run_cli("assess", "--requirement", str(story))
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(assessment["assessment_outcome"], "UNDERSTOOD")
+        self.assertEqual(assessment["requirement_assessment"]["detected_domains"], ["documentation"])
+        self.assertEqual(assessment["requirement_assessment"]["questions"], [])
+
+    def test_assess_requirement_data_only_does_not_require_ui_or_api(self):
+        self.run_cli("assess", "--requirement", "Add EmailAddress column to Customer table.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(assessment["assessment_outcome"], "PROCEED_WITH_ASSUMPTIONS")
+        self.assertEqual(assessment["requirement_assessment"]["detected_domains"], ["data"])
+        self.assertIn("ui", assessment["requirement_assessment"]["out_of_scope"])
+        self.assertIn("api", assessment["requirement_assessment"]["out_of_scope"])
+        self.assertEqual(assessment["requirement_assessment"]["questions"], [])
+
+    def test_assess_requirement_search_ambiguity_requires_clarification(self):
+        self.run_cli("assess", "--requirement", "Add customer search.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(assessment["assessment_outcome"], "CLARIFICATION_REQUIRED")
+        self.assertIn("Should search be exact, partial, fuzzy, or full text?", assessment["requirement_assessment"]["questions"])
+        self.assertIn("Which fields should customer search include?", assessment["requirement_assessment"]["questions"])
+
+    def test_assess_requirement_ui_only_minimizes_questions(self):
+        self.run_cli("assess", "--requirement", "Add a settings page with a save button.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(assessment["assessment_outcome"], "PROCEED_WITH_ASSUMPTIONS")
+        self.assertEqual(assessment["requirement_assessment"]["detected_domains"], ["ui"])
+        self.assertEqual(assessment["requirement_assessment"]["questions"], [])
+
+    def test_assess_cli_uses_requirement_argument(self):
+        parser_output = StringIO()
+        parser_error = StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(parser_output), redirect_stderr(parser_error):
+            main(["assess", "--prompt", "Create a task."], self.cwd)
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.run_cli("assess", "--requirement", "Update README with installation instructions.")
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Update README with installation instructions.")
 
     def test_assessment_is_deterministic_for_unchanged_mission(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

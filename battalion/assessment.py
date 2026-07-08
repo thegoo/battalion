@@ -14,6 +14,9 @@ ENGINEERING_COMPATIBILITY_DISCLAIMER = (
     "Framework, SDK, runtime, library, package, platform, and standards versions must always be validated by the human engineering team for compatibility during implementation, testing, and assurance."
 )
 READINESS_LEVELS = ("NOT_READY", "PARTIALLY_READY", "READY_WITH_RISK", "READY")
+ASSESSMENT_OUTCOMES = ("UNDERSTOOD", "PROCEED_WITH_ASSUMPTIONS", "CLARIFICATION_REQUIRED")
+MISSION_DOMAINS = ("api", "data", "ui", "infra", "security", "documentation", "testing", "unknown")
+MISSION_SCALES = ("task", "slice", "user_story", "feature", "epic", "unknown")
 RECOMMENDATIONS = (
     "Resolve Clarifications",
     "Refine Requirements",
@@ -245,6 +248,142 @@ def _text(value: Any) -> str:
 
 def _contains(text: str, pattern: str) -> bool:
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
+def assess_requirement_text(requirement: str) -> Dict[str, Any]:
+    """Produce the concise v1 requirement-understanding model.
+
+    This deliberately answers a narrower question than full Mission Assurance:
+    does Battalion understand this requirement well enough to proceed to planning?
+    The model is deterministic and asks only material implementation or
+    verification questions.
+    """
+    text = requirement.strip()
+    domains = _detect_requirement_domains(text)
+    scale = _detect_requirement_scale(text, domains)
+    understanding = _requirement_understanding(text, domains)
+    assumptions = _requirement_assumptions(text, domains)
+    questions = _material_questions(text, domains)
+    out_of_scope = _out_of_scope_domains(domains)
+
+    if questions:
+        outcome = "CLARIFICATION_REQUIRED"
+        confidence = "medium" if domains != ["unknown"] else "low"
+        recommendation = "Clarify before planning."
+    elif assumptions:
+        outcome = "PROCEED_WITH_ASSUMPTIONS"
+        confidence = "high" if domains != ["unknown"] else "medium"
+        recommendation = "Proceed to planning."
+    else:
+        outcome = "UNDERSTOOD"
+        confidence = "high" if domains != ["unknown"] else "medium"
+        recommendation = "Proceed to planning."
+
+    if not text:
+        outcome = "CLARIFICATION_REQUIRED"
+        confidence = "low"
+        understanding = []
+        questions = ["What requirement should Battalion assess?"]
+        recommendation = "Provide a requirement before planning."
+
+    return {
+        "outcome": outcome,
+        "confidence": confidence,
+        "understanding": understanding,
+        "detected_scale": scale,
+        "detected_domains": domains,
+        "assumptions": assumptions,
+        "blocking_ambiguities": questions,
+        "questions": questions,
+        "out_of_scope": out_of_scope,
+        "recommendation": recommendation,
+    }
+
+
+def _detect_requirement_domains(text: str) -> List[str]:
+    checks = [
+        ("api", r"\b(endpoint|api|route|get|post|put|patch|delete|http|rest)\b"),
+        ("data", r"\b(database|schema|migration|column|entity|model|table|sql)\b"),
+        ("ui", r"\b(screen|page|form|button|ux|ui|modal|frontend|react|view)\b"),
+        ("infra", r"\b(docker|container|kubernetes|terraform|deployment|pipeline|infrastructure|hosting)\b"),
+        ("security", r"\b(auth|jwt|oauth|permission|security|encrypt|secret|owasp|authorization|authentication)\b"),
+        ("documentation", r"\b(documentation|readme|markdown|docs?|installation instructions)\b"),
+        ("testing", r"\b(test|tests|testing|spec|validation|happy-path|negative-path|malicious)\b"),
+    ]
+    domains = [domain for domain, pattern in checks if _contains(text, pattern)]
+    return domains or ["unknown"]
+
+
+def _detect_requirement_scale(text: str, domains: List[str]) -> str:
+    if _contains(text, r"\b(epic|program|platform|multi[- ]team|roadmap)\b"):
+        return "epic"
+    if _contains(text, r"\b(feature|capability|module)\b"):
+        return "feature"
+    if _contains(text, r"\bas a\b.+\bi want\b|\buser story\b"):
+        return "user_story"
+    if _contains(text, r"\b(endpoint|column|readme|button|modal|migration|bug|fix|update|add|create)\b"):
+        return "slice" if len(domains) > 1 and "unknown" not in domains else "task"
+    return "unknown"
+
+
+def _requirement_understanding(text: str, domains: List[str]) -> List[str]:
+    values = []
+    if "api" in domains:
+        values.append("Backend API enhancement")
+        if _contains(text, r"\bretrieve|read|get\b") and not _contains(text, r"\bpost|put|patch|delete|create|update|remove\b"):
+            values.append("Read-only endpoint")
+    if "data" in domains:
+        values.append("Data/schema change")
+    if "ui" in domains:
+        values.append("User interface change")
+    if "documentation" in domains:
+        values.append("Documentation update")
+    if "infra" in domains:
+        values.append("Infrastructure or deployment change")
+    if "testing" in domains:
+        values.append("Testing or validation work")
+    if "security" in domains:
+        values.append("Security-sensitive behavior")
+    if "ui" not in domains:
+        values.append("No UI detected")
+    return values or ["Requirement type is not yet classified"]
+
+
+def _requirement_assumptions(text: str, domains: List[str]) -> List[str]:
+    assumptions = []
+    if "api" in domains:
+        assumptions.append("Existing API conventions apply.")
+        if _contains(text, r"\bcustomer|user|account|order|email\b"):
+            assumptions.append("Existing data model contains the referenced field or entity.")
+        if not _contains(text, r"\bpublic|anonymous|unauthenticated|no auth\b"):
+            assumptions.append("Existing authentication middleware applies.")
+    if "data" in domains:
+        assumptions.append("Existing database migration conventions apply.")
+    if "ui" in domains:
+        assumptions.append("Existing design system and UI conventions apply.")
+    if "documentation" in domains and len(domains) == 1:
+        return []
+    return assumptions
+
+
+def _material_questions(text: str, domains: List[str]) -> List[str]:
+    questions = []
+    if _contains(text, r"\bsearch\b"):
+        if not _contains(text, r"\bexact|partial|fuzzy|full[- ]text\b"):
+            questions.append("Should search be exact, partial, fuzzy, or full text?")
+        if not _contains(text, r"\b(name|email|id|phone|address|field|fields)\b"):
+            questions.append("Which fields should customer search include?" if _contains(text, r"\bcustomer\b") else "Which fields should search include?")
+    if "unknown" in domains and _contains(text, r"\badd|create|build|implement|update\b") and len(text.split()) <= 4:
+        questions.append("What behavior should be implemented or changed?")
+    return questions
+
+
+def _out_of_scope_domains(domains: List[str]) -> List[str]:
+    values = []
+    for domain in ("ui", "api", "data", "infra"):
+        if domain not in domains and domains != ["unknown"]:
+            values.append(domain)
+    return values
 
 
 def _constraints(ledger: Dict[str, Any], category: str = "") -> List[Dict[str, Any]]:
@@ -600,6 +739,9 @@ def _mission_summary(mission: Dict[str, Any], ledger: Dict[str, Any], attributes
 def assess(workspace: Path) -> Dict[str, Any]:
     mission = read_yaml(workspace / "mission.yaml")
     ledger = read_yaml(workspace / "ledger.yaml")
+    requirement_assessment = assess_requirement_text(
+        mission.get("mission_prompt") or mission.get("original_prompt") or ledger.get("mission_prompt") or ""
+    )
     classification = classify_mission(mission, ledger, _attribute_catalog(workspace))
     attribute_sources = _attribute_sources_from_classification(classification)
     attributes = sorted(classification["detected_attributes"])
@@ -626,6 +768,10 @@ def assess(workspace: Path) -> Dict[str, Any]:
             "prompt": mission.get("mission_prompt") or mission.get("original_prompt"),
         },
         "mission_summary": _mission_summary(mission, ledger, attributes),
+        "assessment_outcome": requirement_assessment["outcome"],
+        "confidence": requirement_assessment["confidence"],
+        "planning_may_proceed": requirement_assessment["outcome"] in {"UNDERSTOOD", "PROCEED_WITH_ASSUMPTIONS"},
+        "requirement_assessment": requirement_assessment,
         "readiness": readiness,
         "readiness_reason": readiness_reason,
         "recommendation": recommendation,
@@ -697,6 +843,7 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
     ]
     summary = assessment.get("engineering_obligation_summary", {})
     mission = assessment.get("mission", {})
+    requirement_assessment = assessment.get("requirement_assessment", {})
     return f"""# Battalion Mission Assessment
 
 ## Mission
@@ -704,11 +851,35 @@ def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
 - **ID:** {mission.get('id', '—')}
 - **Title:** {mission.get('title', '—')}
 - **Objective:** {mission.get('objective', '—')}
-- **Prompt:** {mission.get('prompt', '—')}
+- **Requirement:** {mission.get('prompt', '—')}
 
 ## Assessment Summary
 
 {assessment.get('mission_summary', '—')}
+
+## Requirement Assessment
+
+- **Outcome:** {assessment.get('assessment_outcome', '—')}
+- **Confidence:** {assessment.get('confidence', '—')}
+- **Detected scale:** {requirement_assessment.get('detected_scale', '—')}
+- **Detected domains:** {', '.join(requirement_assessment.get('detected_domains', [])) or '—'}
+- **Planning may proceed:** {'yes' if assessment.get('planning_may_proceed') else 'no'}
+
+### Understanding
+
+{bullet(requirement_assessment.get('understanding', []))}
+
+### Assessment Assumptions
+
+{bullet(requirement_assessment.get('assumptions', []))}
+
+### Assessment Questions
+
+{bullet(requirement_assessment.get('questions', []))}
+
+### Assessment Out of Scope
+
+{bullet(requirement_assessment.get('out_of_scope', []))}
 
 ## Readiness
 

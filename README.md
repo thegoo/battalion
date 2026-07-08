@@ -103,13 +103,24 @@ Evaluates whether the mission is ready for the next engineering activity.
 battalion assess
 ```
 
-Assessment may generate or refresh the mission contract from the mission prompt. It produces:
+You can also assess a requirement directly, either inline or from a file:
+
+```bash
+battalion assess --requirement "Create an API endpoint to retrieve customer email."
+battalion assess --requirement ./story.md
+```
+
+For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, `assess --requirement` initializes one from the supplied requirement and then writes assessment artifacts.
+
+Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces:
 
 - `.battalion/assessment.json`
 - `.battalion/assessment.md`
 
 Assessment reports:
 
+- assessment outcome: `UNDERSTOOD`, `PROCEED_WITH_ASSUMPTIONS`, or `CLARIFICATION_REQUIRED`;
+- detected scale and domains;
 - mission classification;
 - generated requirements;
 - acceptance criteria;
@@ -128,6 +139,8 @@ Readiness values are:
 - `READY`
 
 Assessment does not generate code, execute work, dispatch executors, or approve the mission.
+
+Battalion asks clarification questions only when the answer materially changes implementation, verification, or mission outcome. Small slices such as documentation updates, data-only migrations, or focused UI changes should not be treated as full-stack missions.
 
 Use interactive assessment only when you explicitly want assessment to collect clarification answers:
 

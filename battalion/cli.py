@@ -56,6 +56,39 @@ def init(args, cwd):
     print(f"Initialized Battalion mission at {workspace}")
 
 
+def initialize_mission_workspace(cwd: Path, mission_prompt: str, title: str = None, objective: str = None):
+    workspace = root(cwd)
+    workspace.mkdir()
+    (workspace / "reports").mkdir()
+    objective = objective or mission_prompt
+    title = title or objective
+    write_yaml(workspace / "mission.yaml", {
+        "id": "M-001",
+        "title": title,
+        "objective": objective,
+        "mission_prompt": mission_prompt,
+        "original_prompt": mission_prompt,
+        "status": "initialized",
+        "created_at": timestamp(),
+        "doctrine": DOCTRINE,
+    })
+    write_yaml(workspace / "agents.yaml", standing_team())
+    write_default_attribute_catalog(workspace / "attributes.yml")
+    write_yaml(workspace / "ledger.yaml", {"mission_id": "M-001", "mission_prompt": mission_prompt, "requirements": [], "assumptions": [], "risks": []})
+    (workspace / "events.jsonl").touch()
+    append_event(workspace, "mission_initialized", {"mission_id": "M-001"})
+    return workspace
+
+
+def read_requirement_input(value: str, cwd: Path) -> str:
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    if candidate.is_file():
+        return candidate.read_text(encoding="utf-8").strip()
+    return value.strip()
+
+
 def plan(args, cwd):
     workspace = workspace_or_exit(cwd)
     statement = args.requirement
@@ -785,7 +818,28 @@ def status(args, cwd):
 
 
 def assessment(args, cwd):
-    workspace = workspace_or_exit(cwd)
+    if args.requirement:
+        requirement = read_requirement_input(args.requirement, cwd)
+        if not requirement:
+            raise SystemExit("Requirement cannot be empty.")
+        workspace = root(cwd)
+        if not workspace.exists():
+            workspace = initialize_mission_workspace(cwd, requirement, title="Requirement Assessment", objective=requirement)
+        else:
+            ledger = read_yaml(workspace / "ledger.yaml")
+            if ledger.get("requirements"):
+                raise SystemExit("A mission contract already exists. Run battalion assess without --requirement to assess the current mission.")
+            mission = read_yaml(workspace / "mission.yaml")
+            mission["title"] = mission.get("title") or "Requirement Assessment"
+            mission["objective"] = requirement
+            mission["mission_prompt"] = requirement
+            mission.setdefault("original_prompt", requirement)
+            write_yaml(workspace / "mission.yaml", mission)
+            ledger["mission_prompt"] = requirement
+            write_yaml(workspace / "ledger.yaml", ledger)
+            append_event(workspace, "assessment_requirement_updated", {"mission_id": mission.get("id", "M-001")})
+    else:
+        workspace = workspace_or_exit(cwd)
     try:
         ensure_assessed_contract(workspace)
     except ValueError as exc:
@@ -803,6 +857,28 @@ def assessment(args, cwd):
 
 
 def print_assessment_summary(result):
+    requirement_assessment = result.get("requirement_assessment", {})
+    print("Assessment Result")
+    print("-----------------")
+    print(result.get("assessment_outcome", result.get("readiness", "UNKNOWN")))
+    print(f"Confidence: {result.get('confidence', '—')}")
+    print(f"Detected Scale: {requirement_assessment.get('detected_scale', '—')}")
+    print("Detected Domains:")
+    for domain in requirement_assessment.get("detected_domains", []) or ["unknown"]:
+        print(f"- {domain}")
+    print("\nUnderstanding")
+    for item in requirement_assessment.get("understanding", []) or ["None"]:
+        print(f"- {item}")
+    print("\nAssumptions")
+    for item in requirement_assessment.get("assumptions", []) or ["None"]:
+        print(f"- {item}")
+    print("\nQuestions")
+    for item in requirement_assessment.get("questions", []) or ["None"]:
+        print(f"- {item}")
+    print("\nOut of Scope")
+    for item in requirement_assessment.get("out_of_scope", []) or ["None"]:
+        print(f"- {item}")
+    print(f"\nRecommendation\n{requirement_assessment.get('recommendation', result.get('recommendation', '—'))}")
     print(f"Readiness: {result['readiness']}")
     print(f"\nEngineering Compatibility Disclaimer\n- {result['engineering_compatibility_disclaimer']}")
     print("\nMission Classification")
@@ -1063,6 +1139,7 @@ def parser():
     p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
     commands.add_parser("status")
     p = commands.add_parser("assess")
+    p.add_argument("--requirement", help="Requirement text or path to a requirement file to assess")
     p.add_argument("--interactive", action="store_true", help="Prompt for outstanding clarification answers during assessment")
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
     p = commands.add_parser("assure")
