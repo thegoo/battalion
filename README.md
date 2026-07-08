@@ -97,7 +97,7 @@ battalion init \
 
 ### `battalion assess`
 
-Evaluates whether the mission is ready for the next engineering activity.
+Evaluates whether Battalion understands the mission well enough to create a reliable execution plan.
 
 ```bash
 battalion assess
@@ -112,33 +112,24 @@ battalion assess --requirement ./story.md
 
 For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, `assess --requirement` initializes one from the supplied requirement and then writes assessment artifacts.
 
-Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces:
+Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces internal artifacts for later Battalion phases:
 
 - `.battalion/assessment.json`
 - `.battalion/assessment.md`
 
-Assessment reports:
+The CLI output is intentionally limited to mission assessment:
 
 - assessment outcome: `UNDERSTOOD`, `PROCEED_WITH_ASSUMPTIONS`, or `CLARIFICATION_REQUIRED`;
 - detected scale and domains;
-- mission classification;
-- generated requirements;
-- acceptance criteria;
-- constraints;
 - assumptions;
-- risks;
-- open clarifications;
-- engineering readiness;
-- recommended next action.
+- blocking ambiguity;
+- minimal clarification questions;
+- mission-scoped out-of-scope items;
+- recommendation to proceed to planning or clarify before planning.
 
-Readiness values are:
+Assessment does not report implementation readiness, engineering obligations, mission assurance, deployment posture, runtime selection, framework selection, or approval to implement. Those belong to planning and assurance.
 
-- `NOT_READY`
-- `PARTIALLY_READY`
-- `READY_WITH_RISK`
-- `READY`
-
-Assessment does not generate code, execute work, dispatch executors, or approve the mission.
+Assessment does not generate code, execute work, dispatch executors, approve the mission, or recommend implementation.
 
 Battalion asks clarification questions only when the answer materially changes implementation, verification, or mission outcome. Small slices such as documentation updates, data-only migrations, or focused UI changes should not be treated as full-stack missions.
 

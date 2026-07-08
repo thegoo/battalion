@@ -269,7 +269,7 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
     if questions:
         outcome = "CLARIFICATION_REQUIRED"
         confidence = "medium" if domains != ["unknown"] else "low"
-        recommendation = "Clarify before planning."
+        recommendation = "Clarification required before planning."
     elif assumptions:
         outcome = "PROCEED_WITH_ASSUMPTIONS"
         confidence = "high" if domains != ["unknown"] else "medium"
@@ -337,7 +337,10 @@ def _requirement_understanding(text: str, domains: List[str]) -> List[str]:
     if "ui" in domains:
         values.append("User interface change")
     if "documentation" in domains:
-        values.append("Documentation update")
+        if _contains(text, r"\breadme(?:\.md)?\b") and _contains(text, r"\bcreate\b"):
+            values.append("Create a README documentation artifact.")
+        else:
+            values.append("Documentation update")
     if "infra" in domains:
         values.append("Infrastructure or deployment change")
     if "testing" in domains:
@@ -380,7 +383,7 @@ def _material_questions(text: str, domains: List[str]) -> List[str]:
 
 def _out_of_scope_domains(domains: List[str]) -> List[str]:
     values = []
-    for domain in ("ui", "api", "data", "infra"):
+    for domain in ("api", "data", "ui", "infra"):
         if domain not in domains and domains != ["unknown"]:
             values.append(domain)
     return values

@@ -852,8 +852,6 @@ def assessment(args, cwd):
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print_assessment_summary(result)
-    print(f"Assessment JSON: {workspace / 'assessment.json'}")
-    print(f"Assessment Report: {workspace / 'assessment.md'}")
 
 
 def print_assessment_summary(result):
@@ -861,11 +859,13 @@ def print_assessment_summary(result):
     print("Assessment Result")
     print("-----------------")
     print(result.get("assessment_outcome", result.get("readiness", "UNKNOWN")))
-    print(f"Confidence: {result.get('confidence', '—')}")
-    print(f"Detected Scale: {requirement_assessment.get('detected_scale', '—')}")
-    print("Detected Domains:")
+    confidence = result.get("confidence", "—")
+    print(f"\nConfidence: {confidence.title() if isinstance(confidence, str) else confidence}")
+    print("\nDetected Scale")
+    print(_assessment_display_label(requirement_assessment.get("detected_scale", "—")))
+    print("\nDetected Domains")
     for domain in requirement_assessment.get("detected_domains", []) or ["unknown"]:
-        print(f"- {domain}")
+        print(f"- {_assessment_display_label(domain)}")
     print("\nUnderstanding")
     for item in requirement_assessment.get("understanding", []) or ["None"]:
         print(f"- {item}")
@@ -877,35 +877,29 @@ def print_assessment_summary(result):
         print(f"- {item}")
     print("\nOut of Scope")
     for item in requirement_assessment.get("out_of_scope", []) or ["None"]:
-        print(f"- {item}")
+        print(f"- {_assessment_display_label(item)}")
     print(f"\nRecommendation\n{requirement_assessment.get('recommendation', result.get('recommendation', '—'))}")
-    print(f"Readiness: {result['readiness']}")
-    print(f"\nEngineering Compatibility Disclaimer\n- {result['engineering_compatibility_disclaimer']}")
-    print("\nMission Classification")
-    attributes = result.get("mission_classification", {}).get("attributes", [])
-    if not attributes:
-        print("- None")
-    for item in attributes:
-        evidence = ", ".join(
-            f"{entry.get('indicator', '—')} from {entry.get('source', '—')}"
-            for entry in item.get("classification_evidence", [])
-        ) or "None"
-        print(f"- {item.get('attribute', '—')}: {item.get('decision', 'not_classified')}; evidence [{evidence}]; hit count {item.get('hit_count', 0)}; threshold {item.get('threshold', 1)}")
-    print("\nPrimary Findings")
-    for finding in primary_assessment_findings(result):
-        print(f"- {finding}")
-    print("\nOutstanding Clarifications")
-    clarifications = result.get("outstanding_clarifications", [])
-    if clarifications:
-        for item in clarifications:
-            print(f"- {item.get('id', '—')}: {item.get('question', '—')}")
-    else:
-        print("- None")
-    print(f"\nRecommendation: {result['recommendation']}")
-    for reason in result.get("recommendation_reason", []):
-        print(f"- {reason}")
-    if clarifications:
-        print("\nRun:\n  battalion clarify")
+
+
+def _assessment_display_label(value):
+    labels = {
+        "api": "API",
+        "ui": "UI",
+        "infra": "Infrastructure",
+        "data": "Data",
+        "documentation": "Documentation",
+        "testing": "Testing",
+        "security": "Security",
+        "unknown": "Unknown",
+        "task": "Task",
+        "slice": "Slice",
+        "user_story": "User Story",
+        "feature": "Feature",
+        "epic": "Epic",
+    }
+    if not isinstance(value, str):
+        return str(value)
+    return labels.get(value, value.replace("_", " ").title())
 
 
 def primary_assessment_findings(result):

@@ -495,7 +495,8 @@ class BattalionCliTests(unittest.TestCase):
             [requirement["id"] for requirement in ledger["requirements"]],
             [f"R-{index:03d}" for index in range(1, len(ledger["requirements"]) + 1)],
         )
-        self.assertIn("Readiness:", output)
+        self.assertIn("Assessment Result", output)
+        self.assertNotIn("Readiness:", output)
 
     def test_mission_analyst_generation_is_deterministic(self):
         prompt = "Build a hello world REST API."
@@ -632,15 +633,15 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(assessment["readiness"], "READY_WITH_RISK")
         self.assertEqual(assessment["recommendation"], "Proceed to Implementation")
 
-    def test_assessment_always_outputs_engineering_compatibility_disclaimer(self):
+    def test_assessment_records_but_does_not_print_engineering_compatibility_disclaimer(self):
         self.initialize_with_prompt("Build a small CLI utility.")
         output = self.run_cli("assess")
         expected = (
             "Framework, SDK, runtime, library, package, platform, and standards versions must always be validated "
             "by the human engineering team for compatibility during implementation, testing, and assurance."
         )
-        self.assertIn("Engineering Compatibility Disclaimer", output)
-        self.assertIn(expected, output)
+        self.assertNotIn("Engineering Compatibility Disclaimer", output)
+        self.assertNotIn(expected, output)
         assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
         self.assertEqual(assessment["engineering_compatibility_disclaimer"], expected)
         markdown = (self.workspace / "assessment.md").read_text(encoding="utf-8")
@@ -936,7 +937,8 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         output = self.run_cli("assess")
         ledger = read_yaml(self.ledger_path)
-        self.assertIn("Readiness:", output)
+        self.assertIn("Assessment Result", output)
+        self.assertNotIn("Readiness:", output)
         self.assertTrue(ledger["requirements"])
         self.assertTrue(all(requirement["acceptance"] for requirement in ledger["requirements"]))
         self.assertTrue(ledger["constraints"])
@@ -971,8 +973,8 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError("assess prompted unexpectedly")):
             output = self.run_cli("assess")
-        self.assertIn("Outstanding Clarifications", output)
-        self.assertIn("Run:\n  battalion clarify", output)
+        self.assertIn("Questions", output)
+        self.assertNotIn("Outstanding Clarifications", output)
         ledger = read_yaml(self.ledger_path)
         self.assertTrue(all(item["status"] == "open" for item in ledger["clarifications"]))
 
@@ -987,7 +989,7 @@ class BattalionCliTests(unittest.TestCase):
         )
         with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=AssertionError("interactive assess prompted without open clarifications")):
             output = self.run_cli("assess", "--interactive")
-        self.assertIn("Outstanding Clarifications\n- None", output)
+        self.assertIn("Questions\n- None", output)
 
     def test_plan_requires_assessment(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
@@ -1328,15 +1330,20 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
         output = self.run_cli("assess")
-        self.assertIn("Readiness: NOT_READY", output)
-        self.assertIn("Mission Classification", output)
-        self.assertIn("REST_API: classified", output)
-        self.assertIn("DATABASE: not_classified", output)
-        self.assertIn("hit count", output)
-        self.assertIn("Primary Findings", output)
-        self.assertIn("Outstanding Clarifications", output)
-        self.assertIn("Recommendation: Resolve Clarifications", output)
-        self.assertIn("Run:\n  battalion clarify", output)
+        self.assertIn("Assessment Result", output)
+        self.assertIn("Detected Scale", output)
+        self.assertIn("Detected Domains", output)
+        self.assertIn("Understanding", output)
+        self.assertIn("Assumptions", output)
+        self.assertIn("Questions", output)
+        self.assertIn("Out of Scope", output)
+        self.assertIn("Recommendation\nProceed to planning.", output)
+        self.assertNotIn("Readiness:", output)
+        self.assertNotIn("Engineering Compatibility Disclaimer", output)
+        self.assertNotIn("Mission Classification", output)
+        self.assertNotIn("Primary Findings", output)
+        self.assertNotIn("Outstanding Clarifications", output)
+        self.assertNotIn("Proceed to Implementation", output)
         assessment_json = self.workspace / "assessment.json"
         assessment_md = self.workspace / "assessment.md"
         self.assertTrue(assessment_json.is_file())
@@ -1436,6 +1443,45 @@ class BattalionCliTests(unittest.TestCase):
         self.assertNotEqual(raised.exception.code, 0)
         self.run_cli("assess", "--requirement", "Update README with installation instructions.")
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Update README with installation instructions.")
+
+    def test_assess_readme_cli_output_is_only_mission_assessment(self):
+        output = self.run_cli("assess", "--requirement", "Create a README.md")
+
+        self.assertIn("Assessment Result\n-----------------\nUNDERSTOOD", output)
+        self.assertIn("Confidence: High", output)
+        self.assertIn("Detected Scale\nTask", output)
+        self.assertIn("Detected Domains\n- Documentation", output)
+        self.assertIn("Understanding\n- Create a README documentation artifact.", output)
+        self.assertIn("Assumptions\n- None", output)
+        self.assertIn("Questions\n- None", output)
+        self.assertIn("Out of Scope\n- API", output)
+        self.assertIn("- Data", output)
+        self.assertIn("- UI", output)
+        self.assertIn("- Infrastructure", output)
+        self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
+        self.assertNotIn("Readiness", output)
+        self.assertNotIn("Engineering Compatibility Disclaimer", output)
+        self.assertNotIn("Mission Classification", output)
+        self.assertNotIn("Primary Findings", output)
+        self.assertNotIn("Outstanding Clarifications", output)
+        self.assertNotIn("Proceed to Implementation", output)
+        self.assertNotIn("Deployment environment", output)
+        self.assertNotIn("Architecture", output)
+        self.assertNotIn("Engineering obligation", output)
+
+    def test_assess_api_cli_output_excludes_unrelated_later_phase_concerns(self):
+        output = self.run_cli("assess", "--requirement", "Create GET /customers/{id}/email")
+
+        self.assertIn("Detected Domains\n- API", output)
+        self.assertIn("Existing data model contains the referenced field or entity.", output)
+        self.assertIn("Existing authentication middleware applies.", output)
+        self.assertIn("Questions\n- None", output)
+        self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
+        self.assertNotIn("deployment", output.lower())
+        self.assertNotIn("runtime", output.lower())
+        self.assertNotIn("ci/cd", output.lower())
+        self.assertNotIn("architecture", output.lower())
+        self.assertNotIn("framework", output.lower())
 
     def mission_scoped_assessment(self, requirement):
         self.run_cli("assess", "--requirement", requirement)
