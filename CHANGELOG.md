@@ -4,8 +4,20 @@ All notable Battalion changes are summarized here. Product usage documentation l
 
 ## Unreleased
 
+### Versioning
+
+- Documented Battalion's pre-v1 `0.x.y` versioning policy.
+- Bumped package version to `0.8.0` for mission-scoped assessment, playbook-driven assessment, and automatic first-command workspace initialization.
+
+### Added
+
+- Added mission playbooks for API endpoint, data model, UI component, infrastructure deployment, automated testing, README, ADR, and open-knowledge missions.
+- Added automatic `.battalion` workspace initialization from `battalion assess --requirement`.
+
 ### Changed
 
+- Refined `battalion assess` to assess mission understanding only, without readiness, assurance, implementation, or project-wide engineering-obligation output.
+- Removed `battalion init` from the normal documented workflow; `battalion assess --requirement` is now the first meaningful command.
 - Improved `battalion assure --run` runtime target reporting and diagnostics.
 - Added concise default CLI evidence output with full runtime evidence available via `--verbose`.
 - Added stale runtime/build and missing Node dependency diagnostics for Mission Assurance.

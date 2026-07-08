@@ -21,7 +21,7 @@ NO_MISSION_MESSAGE = """Current directory does not contain a Battalion mission.
 
 Run:
 
-  battalion init
+  battalion assess --requirement "Describe the mission"
 
 or navigate to a directory containing .battalion"""
 
@@ -1116,7 +1116,7 @@ def resolve(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.7.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")

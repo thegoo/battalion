@@ -312,7 +312,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.7.0", output.getvalue())
+        self.assertIn("Battalion v0.8.0", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -890,7 +890,7 @@ class BattalionCliTests(unittest.TestCase):
     def test_missing_mission_has_friendly_error_for_every_mission_command(self):
         expected = (
             "Current directory does not contain a Battalion mission.\n\n"
-            "Run:\n\n  battalion init\n\n"
+            "Run:\n\n  battalion assess --requirement \"Describe the mission\"\n\n"
             "or navigate to a directory containing .battalion"
         )
         commands = (
@@ -908,6 +908,19 @@ class BattalionCliTests(unittest.TestCase):
                 main(command, self.cwd)
             self.assertEqual(str(raised.exception), expected)
             self.assertNotIn("Traceback", str(raised.exception))
+
+    def test_assess_requirement_initializes_workspace_without_explicit_init(self):
+        output = self.run_cli("assess", "--requirement", "Create a blank README.md to initialize the repo")
+
+        self.assertTrue((self.workspace / "mission.yaml").is_file())
+        self.assertTrue((self.workspace / "ledger.yaml").is_file())
+        self.assertTrue((self.workspace / "agents.yaml").is_file())
+        self.assertTrue((self.workspace / "attributes.yml").is_file())
+        self.assertTrue((self.workspace / "events.jsonl").is_file())
+        self.assertTrue((self.workspace / "reports").is_dir())
+        self.assertTrue((self.workspace / "assessment.json").is_file())
+        self.assertIn("Assessment Result", output)
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Create a blank README.md to initialize the repo")
 
     def test_commands_discover_mission_from_process_current_directory(self):
         original_directory = Path.cwd()

@@ -34,13 +34,22 @@ python -m pytest
 
 Use `python -m pytest` instead of a globally installed `pytest` executable so the test runner uses the environment where Battalion and its dependencies were installed.
 
+## Versioning
+
+Battalion is pre-v1 software. Current releases use `0.x.y` versioning:
+
+- `0.MINOR.0` may introduce product workflow changes, command behavior changes, or artifact contract refinements.
+- `0.x.PATCH` is reserved for compatible fixes, documentation updates, and reliability improvements.
+- `1.0.0` will mark the first stable public workflow and artifact contract.
+
+Before v1, users should read the changelog before upgrading between minor versions.
+
 ## Core workflow
 
 The primary workflow is:
 
 ```bash
-battalion init
-battalion assess
+battalion assess --requirement "Describe the mission"
 battalion clarify
 battalion assess
 battalion plan
@@ -81,19 +90,6 @@ Battalion artifacts are serialized truthfully:
 Multiline YAML values, such as mission prompts, are written as readable block scalars.
 
 ## Commands
-
-### `battalion init`
-
-Initializes a mission workspace.
-
-```bash
-battalion init \
-  --title "Health API" \
-  --objective "Build a REST API health endpoint." \
-  --prompt "Build a production-ready REST API that exposes a single application health endpoint."
-```
-
-`init` creates the mission record, standing team record, attribute catalog, ledger, audit file, and reports directory. The mission prompt is authoritative and remains immutable mission input.
 
 ### `battalion assess`
 
@@ -554,7 +550,7 @@ Avoid globally installed `pytest` executables that use a different Python enviro
 
 ### Command cannot find a mission
 
-Run `battalion init` in the current directory or navigate to a directory containing `.battalion`.
+Run `battalion assess --requirement "Describe the mission"` in the current directory or navigate to a directory containing `.battalion`.
 
 ### Planning says the mission is not ready
 
