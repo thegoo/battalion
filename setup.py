@@ -5,8 +5,8 @@ from setuptools import find_packages, setup
 
 setup(
     name="battalion-cli",
-    version="0.5.0",
-    description="Deterministic mission assessment, planning, and dispatch",
+    version="0.7.0",
+    description="Deterministic mission assessment, planning, dispatch, assurance, and resolve",
     python_requires=">=3.9",
     packages=find_packages(include=("battalion", "battalion.*")),
     package_data={"battalion": ["attributes.yml"]},

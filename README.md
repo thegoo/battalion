@@ -278,7 +278,65 @@ Runs Mission Assurance.
 battalion assure
 ```
 
-Assurance validates the mission contract, evidence, required reviews, traceability, and audit trail. It produces:
+Static Assurance is the default:
+
+```bash
+battalion assure
+```
+
+Static Assurance validates recorded artifacts, evidence files, source-visible contract signals, reviews, schemas, traceability, and audit records.
+
+Runtime Assurance is opt-in:
+
+```bash
+battalion assure --run
+```
+
+Runtime Assurance validates deterministic local engineering behavior when safe local checks are available. For example, it may inspect localhost HTTP responses and compare observed status codes, JSON bodies, response fields, and timestamps against acceptance criteria.
+
+Runtime Assurance does not deploy, commit, push, create pull requests, call external APIs, or manage executor/runtime setup.
+
+When runtime validation executes, Battalion prints the runtime target it validated:
+
+```text
+Runtime Target:
+- Base URL: http://127.0.0.1:3000
+  Endpoint: /v1/health
+  Full URL: http://127.0.0.1:3000/v1/health
+```
+
+Default CLI output is concise and shows expected values, observed values, summarized evidence, recommendations, and diagnostics such as stale runtime/build hints. Full evidence is still preserved in `.battalion/assurance.json` and `.battalion/assurance.md`.
+
+To print full runtime evidence in the terminal:
+
+```bash
+battalion assure --run --verbose
+```
+
+Assurance answers:
+
+> Did we build what we agreed to build?
+
+Assurance validates implementation outputs against the engineering contract: mission prompt, mission contract, assessment, mission plan, acceptance criteria, evidence, and produced artifacts. It is deterministic and evidence-based. It does not use AI, infer unstated intent, judge implementation style, or replace human code review.
+
+Assurance writes:
+
+- `.battalion/assurance.json`
+- `.battalion/assurance.md`
+
+Each engineering check returns:
+
+- `VERIFIED`
+- `FAILED`
+- `UNABLE_TO_VERIFY`
+
+`UNABLE_TO_VERIFY` means Battalion could not prove the criterion deterministically from available artifacts or evidence.
+
+Runtime evidence, when available, is preferred over static evidence because observable engineering behavior is stronger than source inspection.
+
+Assurance separates engineering-contract findings from governance findings. Engineering findings answer whether the implementation satisfies the contract. Governance findings cover reviews, audit integrity, schema validity, and contract lifecycle state.
+
+The overall result still uses:
 
 - status: `GREEN`, `AMBER`, or `RED`
 - recommendation: `GO` or `NO-GO`
@@ -286,6 +344,72 @@ Assurance validates the mission contract, evidence, required reviews, traceabili
 - traceable findings
 
 `GO` is impossible unless status is `GREEN`.
+
+### `battalion resolve`
+
+Creates a focused implementation correction package from failed Mission Assurance findings.
+
+```bash
+battalion resolve
+```
+
+Resolve consumes the latest `.battalion/assurance.json` and writes:
+
+```text
+.battalion/resolutions/RES-001/
+```
+
+The package contains:
+
+- `instructions.md`
+- `metadata.yaml`
+
+Resolve includes only `FAILED` engineering checks. It excludes:
+
+- `VERIFIED` checks
+- `UNABLE_TO_VERIFY` checks
+- governance findings
+- pending reviews
+- clarification history
+- audit history
+
+Resolve preserves the original mission, assessment, mission plan, and assurance report reference. It does not reassess, replan, regenerate requirements, modify acceptance criteria, or redefine mission scope.
+
+To hand failed findings to an executor:
+
+```bash
+battalion resolve --executor codex
+battalion resolve --executor claude-code
+battalion resolve --executor copilot
+```
+
+Resolve uses the same executor abstraction and execution modes as Dispatch:
+
+```bash
+battalion resolve --executor codex --mode auto
+```
+
+The correction loop is:
+
+```text
+Init
+↓
+Assess
+↓
+Clarify
+↓
+Plan
+↓
+Dispatch
+↓
+Assure
+↓
+Resolve
+↓
+Assure
+```
+
+Repeat Resolve and Assurance until the Engineering Result is `GREEN`.
 
 ### `battalion report`
 

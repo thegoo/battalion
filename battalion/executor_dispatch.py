@@ -272,9 +272,9 @@ def render_executor_wrapper(executor_id: str, mode: str, mission_plan: str, arch
     )
 
 
-def invocation_command(executor_id: str, instructions_path: Path, mode: str) -> List[str]:
+def invocation_command(executor_id: str, instructions_path: Path, mode: str, prompt: Optional[str] = None) -> List[str]:
     executor = SUPPORTED_EXECUTORS[executor_id]
-    prompt = f"Execute the Battalion dispatch package at {instructions_path}."
+    prompt = prompt or f"Execute the Battalion dispatch package at {instructions_path}."
     if executor_id == "codex":
         command = [executor["command"], *executor["args"]]
         if mode == "auto":

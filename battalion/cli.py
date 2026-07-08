@@ -11,6 +11,7 @@ from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .executor_dispatch import SUPPORTED_EXECUTORS, dispatch_engineering_brief
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
+from .mission_resolve import resolve_mission
 from .reporting import render_report
 from .storage import append_event, read_yaml, root, timestamp, write_yaml
 
@@ -924,15 +925,97 @@ def resolve_assessment_clarifications(workspace, args, assessment_result):
 
 def assurance(args, cwd):
     workspace = workspace_or_exit(cwd)
-    result = assure(workspace)
+    result = assure(workspace, run=args.run)
     if (workspace / "events.jsonl").is_file(): append_event(workspace, "assurance_completed", result.to_dict())
     counts = result.clarification_counts
+    engineering = result.engineering_result or {}
+    summary = engineering.get("summary", {})
+    print("Mission Assurance")
+    print(f"\nEngineering Result: {engineering.get('status', result.status)}")
+    print(f"Recommendation: {result.recommendation}")
+    print("\nSummary:")
+    print(f"- Verified: {summary.get('verified', 0)}")
+    print(f"- Failed: {summary.get('failed', 0)}")
+    print(f"- Unable to verify: {summary.get('unable_to_verify', 0)}")
+    print(f"- Runtime Checks: {summary.get('runtime_checks', 0)}")
+    print(f"- Static Checks: {summary.get('static_checks', 0)}")
+    if args.run:
+        print("\nRuntime Target:")
+        targets = engineering.get("runtime_targets", [])
+        if targets:
+            for target in targets:
+                print(f"- Base URL: {target.get('base_url', '—')}")
+                print(f"  Endpoint: {target.get('endpoint', '—')}")
+                print(f"  Full URL: {target.get('full_url', '—')}")
+        else:
+            print("- None detected")
+        diagnostics = engineering.get("diagnostics", [])
+        if diagnostics:
+            print("\nDiagnostics:")
+            for diagnostic in diagnostics:
+                print(f"- {diagnostic}")
+    for title, state in (("Failed", "FAILED"), ("Unable to verify", "UNABLE_TO_VERIFY")):
+        print(f"\n{title}:")
+        checks = [check for check in engineering.get("checks", []) if check.get("result") == state]
+        if checks:
+            for check in checks:
+                print(f"- Requirement: {check.get('requirement_id', '—')}")
+                print(f"  Criterion: {check.get('criterion', '—')}")
+                print(f"  Result: {check.get('result', '—')}")
+                print(f"  Evidence: {_format_evidence(check.get('evidence'), verbose=args.verbose)}")
+                print(f"  Expected: {json.dumps(check.get('expected'), sort_keys=True)}")
+                print(f"  Observed: {json.dumps(check.get('observed'), sort_keys=True)}")
+                print(f"  Finding: {check.get('finding', '—')}")
+                print(f"  Recommendation: {check.get('recommendation', '—')}")
+                for diagnostic in check.get("diagnostics", []) or []:
+                    print(f"  Diagnostic: {diagnostic}")
+        else:
+            print("- None")
+    print("\nGovernance:")
+    print(f"- Result: {result.governance_result.get('status', result.status) if result.governance_result else result.status}")
     print(
-        f"Status: {result.status}\nRecommendation: {result.recommendation}\nConfidence: {result.confidence}\n"
-        f"Clarifications: {counts.get('open', 0)} open, {counts.get('resolved', 0)} resolved, "
-        f"{counts.get('superseded', 0)} superseded, {counts.get('rejected', 0)} rejected\nFindings:"
+        f"- Clarifications: {counts.get('open', 0)} open, {counts.get('resolved', 0)} resolved, "
+        f"{counts.get('superseded', 0)} superseded, {counts.get('rejected', 0)} rejected"
     )
-    for finding in result.findings: print(f"- {finding}")
+    governance_findings = (result.governance_result or {}).get("findings", [])
+    if governance_findings:
+        for finding in governance_findings:
+            print(f"- {finding}")
+    else:
+        print("- None")
+    print("\nOverall:")
+    print(f"- Status: {result.status}")
+    print(f"- Recommendation: {result.recommendation}")
+    print(f"- Confidence: {result.confidence}")
+    print("\nArtifacts:")
+    print(f"- {workspace / 'assurance.json'}")
+    print(f"- {workspace / 'assurance.md'}")
+
+
+def _format_evidence(evidence, verbose=False):
+    if verbose:
+        return json.dumps(evidence, sort_keys=True)
+    if not evidence:
+        return "None"
+    values = []
+    for item in evidence:
+        if isinstance(item, dict) and item.get("type") == "http_response":
+            parts = []
+            if item.get("url"):
+                parts.append(f"url={item['url']}")
+            if item.get("status_code") is not None:
+                parts.append(f"status={item['status_code']}")
+            if item.get("error"):
+                parts.append(f"error={item['error']}")
+            body = item.get("body")
+            if isinstance(body, str) and len(body) <= 120:
+                parts.append(f"body={body}")
+            elif isinstance(body, str):
+                parts.append(f"body={body[:117]}...")
+            values.append("HTTP response (" + ", ".join(parts) + ")")
+        else:
+            values.append(str(item))
+    return "; ".join(values)
 
 
 def report(args, cwd):
@@ -944,8 +1027,16 @@ def report(args, cwd):
     print(f"Generated {target}")
 
 
+def resolve(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    try:
+        resolve_mission(workspace, executor=args.executor, mode=args.mode)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.5.0 deterministic mission assessment, planning, and dispatch")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.7.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
@@ -974,7 +1065,13 @@ def parser():
     p = commands.add_parser("assess")
     p.add_argument("--interactive", action="store_true", help="Prompt for outstanding clarification answers during assessment")
     p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
-    commands.add_parser("assure"); commands.add_parser("report")
+    p = commands.add_parser("assure")
+    p.add_argument("--run", action="store_true", help="Run deterministic local runtime validation in addition to static assurance")
+    p.add_argument("--verbose", action="store_true", help="Show full assurance evidence in CLI output")
+    p = commands.add_parser("resolve")
+    p.add_argument("--executor", help=f"Send failed Mission Assurance findings to a supported executor: {', '.join(sorted(SUPPORTED_EXECUTORS))}")
+    p.add_argument("--mode", choices=["auto", "standard"], default="standard", help="Executor invocation mode; auto permits routine local implementation work but never source control or deployment actions")
+    commands.add_parser("report")
     return result
 
 
@@ -989,6 +1086,7 @@ def main(argv=None, cwd=None):
         "status": status,
         "assess": assessment,
         "assure": assurance,
+        "resolve": resolve,
         "report": report,
     }[args.command](args, cwd)
 

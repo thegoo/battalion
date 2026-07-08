@@ -4,10 +4,64 @@ All notable Battalion changes are summarized here. Product usage documentation l
 
 ## Unreleased
 
+### Changed
+
+- Improved `battalion assure --run` runtime target reporting and diagnostics.
+- Added concise default CLI evidence output with full runtime evidence available via `--verbose`.
+- Added stale runtime/build and missing Node dependency diagnostics for Mission Assurance.
+
 ### Documentation
 
 - Rewrote `README.md` as product documentation rather than implementation history.
 - Moved release and slice summaries into `CHANGELOG.md`.
+
+## v0.7.0 — Mission Resolve
+
+### Added
+
+- Added `battalion resolve`.
+- Added deterministic resolution packages under `.battalion/resolutions/RES-###/`.
+- Added Resolve package metadata referencing the original mission, assessment, mission plan, and originating assurance report hash.
+- Added executor handoff for Resolve using the same supported executors and modes as Dispatch.
+
+### Changed
+
+- Completed the engineering correction loop: Dispatch → Assure → Resolve → Assure.
+- Resolve packages include only failed engineering checks and exclude verified checks, unable-to-verify checks, governance findings, pending reviews, clarification history, and audit history.
+- Bumped package version to `0.7.0`.
+
+## v0.6.1 — Mission Assurance Runtime Validation
+
+### Added
+
+- Added opt-in runtime Mission Assurance with `battalion assure --run`.
+- Added deterministic localhost HTTP validation for endpoint acceptance criteria.
+- Added runtime evidence capture for HTTP responses, status codes, headers, response bodies, and JSON fields.
+- Added runtime/static check counts to engineering assurance summaries.
+- Added runtime evidence to `.battalion/assurance.json` and `.battalion/assurance.md`.
+
+### Changed
+
+- Static assurance remains the default for `battalion assure`.
+- Runtime evidence is preferred over static evidence when `--run` is requested and a safe localhost target is available.
+- Assurance CLI output now presents one engineering outcome per acceptance criterion with expected, observed, evidence, and recommendation details.
+
+## v0.6.0 — Mission Assurance MVP
+
+### Added
+
+- Added engineering-contract assurance as the primary Mission Assurance output.
+- Added per-acceptance-criterion assurance checks with `VERIFIED`, `FAILED`, and `UNABLE_TO_VERIFY` results.
+- Added canonical `.battalion/assurance.json` output.
+- Added human-readable `.battalion/assurance.md` output.
+- Added deterministic observable checks for static evidence, response-body literals, endpoint references, HTTP 200 evidence, timestamps, Docker evidence, and test artifacts.
+- Added health endpoint mismatch coverage where the contract requires `status = Healthy` and implementation evidence returns `status = ok`.
+
+### Changed
+
+- Separated engineering findings from governance findings.
+- Overall assurance status is derived from engineering failures first, while preserving governance validation.
+- CLI assurance output now prioritizes actionable engineering findings before governance findings.
 
 ## v0.5.0 — Dispatch MVP
 

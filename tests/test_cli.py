@@ -30,6 +30,19 @@ class FakeProcess:
         return self.return_code
 
 
+def runtime_http_response(status="Healthy", timestamp="2026-07-03T02:44:00.284Z", code=200):
+    body = json.dumps({"status": status, "timestamp": timestamp})
+    return {
+        "ok": True,
+        "url": "http://127.0.0.1:48151/v1/health",
+        "status_code": code,
+        "headers": {"content-type": "application/json", "x-diagnostic": "full-header-value"},
+        "body": body,
+        "json": json.loads(body),
+        "error": None,
+    }
+
+
 class BattalionCliTests(unittest.TestCase):
     CONSTRAINT_PROMPT = (
         "Build a TypeScript Node REST API running in Docker with a health endpoint. "
@@ -89,6 +102,32 @@ class BattalionCliTests(unittest.TestCase):
             review["status"] = "completed"
         write_yaml(self.ledger_path, ledger)
 
+    def write_assurance_contract(self, acceptance, evidence=None, review_status="pending", requirement_status="completed"):
+        self.initialize_with_prompt("Build a production-ready REST API with GET /v1/health returning status Healthy.")
+        evidence = evidence or []
+        ledger = read_yaml(self.ledger_path)
+        ledger["requirements"] = [{
+            "id": "R-001",
+            "statement": "Implement health endpoint",
+            "status": requirement_status,
+            "owner": "developer",
+            "acceptance": acceptance,
+            "evidence": evidence,
+            "assumptions": [],
+            "risks": [],
+            "required_reviews": [
+                {"reviewer": "architect", "status": review_status},
+                {"reviewer": "tester", "status": review_status},
+            ],
+        }]
+        write_yaml(self.ledger_path, ledger)
+        (self.workspace / "assessment.json").write_text(json.dumps({
+            "schema_version": "battalion.assessment.v2",
+            "readiness": "READY",
+            "mission_attributes": ["REST_API", "HTTP_ENDPOINT"],
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (self.workspace / "mission-plan.md").write_text("# Mission\n\n## Evidence Required\n\n- Health response evidence\n", encoding="utf-8")
+
     def create_engineering_brief(self, architecture_references=None):
         architecture_references = architecture_references or []
         self.initialize_with_prompt("Build a command-line utility.")
@@ -114,6 +153,78 @@ class BattalionCliTests(unittest.TestCase):
             "",
         ])
         (self.workspace / "mission-plan.md").write_text("\n".join(lines), encoding="utf-8")
+
+    def create_resolve_context(self, engineering_status="RED", checks=None):
+        self.create_engineering_brief()
+        (self.workspace / "assessment.json").write_text(json.dumps({
+            "schema_version": "battalion.assessment.v2",
+            "readiness": "READY",
+            "mission_attributes": ["REST_API", "HTTP_ENDPOINT"],
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        checks = checks if checks is not None else [
+            {
+                "check_id": "ENG-001",
+                "requirement_id": "R-001",
+                "criterion": "CLI exits successfully",
+                "check_type": "process_exit",
+                "expected": 0,
+                "observed": 0,
+                "evidence": ["tests/test_cli.py"],
+                "result": "VERIFIED",
+                "finding": "R-001: Verified CLI exits successfully.",
+                "recommendation": "No action required.",
+            },
+            {
+                "check_id": "ENG-002",
+                "requirement_id": "R-002",
+                "criterion": "Response body status equals Healthy",
+                "check_type": "response_body_literal",
+                "expected": {"field": "status", "value": "Healthy"},
+                "observed": {"field": "status", "value": "ok"},
+                "evidence": ["src/app.ts"],
+                "result": "FAILED",
+                "finding": 'R-002: Expected response status field "Healthy"; observed "ok".',
+                "recommendation": "Update implementation or engineering contract.",
+            },
+            {
+                "check_id": "ENG-003",
+                "requirement_id": "R-003",
+                "criterion": "Docker image builds successfully",
+                "check_type": "docker_build",
+                "expected": "docker build succeeds",
+                "observed": None,
+                "evidence": [],
+                "result": "UNABLE_TO_VERIFY",
+                "finding": "R-003: Unable to verify Docker build.",
+                "recommendation": "Provide Docker build evidence.",
+            },
+        ]
+        assurance = {
+            "status": "RED" if engineering_status == "RED" else "GREEN",
+            "recommendation": "NO-GO" if engineering_status != "GREEN" else "GO",
+            "confidence": 100,
+            "findings": [check["finding"] for check in checks if check["result"] == "FAILED"],
+            "clarification_counts": {"open": 0, "resolved": 0, "superseded": 0, "rejected": 0},
+            "engineering_result": {
+                "status": engineering_status,
+                "recommendation": "NO-GO" if engineering_status != "GREEN" else "GO",
+                "summary": {
+                    "verified": sum(1 for check in checks if check["result"] == "VERIFIED"),
+                    "failed": sum(1 for check in checks if check["result"] == "FAILED"),
+                    "unable_to_verify": sum(1 for check in checks if check["result"] == "UNABLE_TO_VERIFY"),
+                    "runtime_checks": 0,
+                    "static_checks": len(checks),
+                },
+                "checks": checks,
+            },
+            "governance_result": {
+                "status": "AMBER",
+                "recommendation": "NO-GO",
+                "findings": ["R-001: Required review is pending: architect"],
+            },
+        }
+        (self.workspace / "assurance.json").write_text(json.dumps(assurance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return assurance
 
     def result(self):
         return assure(self.workspace)
@@ -201,7 +312,7 @@ class BattalionCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
             main(["--help"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("Battalion v0.5.0", output.getvalue())
+        self.assertIn("Battalion v0.7.0", output.getvalue())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -1128,6 +1239,91 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("executor says: build started", output)
         self.assertIn("executor says: build complete", output)
 
+    def test_resolve_requires_assurance_report(self):
+        self.create_engineering_brief()
+        (self.workspace / "assessment.json").write_text(json.dumps({"readiness": "READY"}, indent=2) + "\n", encoding="utf-8")
+        with self.assertRaises(SystemExit) as raised:
+            main(["resolve"], self.cwd)
+        self.assertIn("Run battalion assure", str(raised.exception))
+        self.assertFalse((self.workspace / "resolutions").exists())
+
+    def test_resolve_green_assurance_produces_no_package(self):
+        verified = [{
+            "check_id": "ENG-001",
+            "requirement_id": "R-001",
+            "criterion": "CLI exits successfully",
+            "check_type": "process_exit",
+            "expected": 0,
+            "observed": 0,
+            "evidence": ["tests/test_cli.py"],
+            "result": "VERIFIED",
+            "finding": "R-001: Verified CLI exits successfully.",
+            "recommendation": "No action required.",
+        }]
+        self.create_resolve_context("GREEN", verified)
+        output = self.run_cli("resolve")
+        self.assertIn("No engineering failures require resolution.", output)
+        self.assertFalse((self.workspace / "resolutions").exists())
+
+    def test_resolve_package_contains_only_failed_engineering_findings(self):
+        self.create_resolve_context()
+        output = self.run_cli("resolve")
+        self.assertIn("Mission Resolve package created.", output)
+        self.assertIn("Resolution: RES-001", output)
+        package = self.workspace / "resolutions" / "RES-001"
+        instructions = (package / "instructions.md").read_text(encoding="utf-8")
+        metadata = read_yaml(package / "metadata.yaml")
+        self.assertIn("Battalion Resolve Package", instructions)
+        self.assertIn("Build a command-line utility.", instructions)
+        self.assertIn("Response body status equals Healthy", instructions)
+        self.assertIn('"value": "Healthy"', instructions)
+        self.assertIn('"value": "ok"', instructions)
+        self.assertIn("src/app.ts", instructions)
+        self.assertIn("Correct the implementation.", instructions)
+        self.assertIn("Do not modify the mission.", instructions)
+        self.assertIn("Do not modify acceptance criteria.", instructions)
+        self.assertIn("Do not weaken tests.", instructions)
+        self.assertIn("```markdown\n# Mission", instructions)
+        self.assertNotIn("CLI exits successfully", instructions)
+        self.assertNotIn("Docker image builds successfully", instructions)
+        self.assertNotIn("Required review is pending", instructions)
+        self.assertEqual(metadata["resolution_id"], "RES-001")
+        self.assertEqual(metadata["status"], "PENDING")
+        self.assertEqual(metadata["mission"], "mission.yaml")
+        self.assertEqual(metadata["mission_plan"], "mission-plan.md")
+        self.assertEqual(metadata["assurance_report"], "assurance.json")
+        self.assertEqual(len(metadata["failed_findings"]), 1)
+        self.assertEqual(metadata["failed_findings"][0]["check_id"], "ENG-002")
+
+    def test_resolve_executor_invocation_matches_dispatch(self):
+        self.create_resolve_context()
+        with patch("battalion.executor_dispatch.subprocess.Popen", return_value=FakeProcess()) as runner:
+            output = self.run_cli("resolve", "--executor", "codex")
+        self.assertIn("Starting executor...", output)
+        self.assertIn("Resolve complete.", output)
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.kwargs["cwd"], self.cwd)
+        self.assertEqual(runner.call_args.args[0][0:2], ["codex", "exec"])
+        self.assertIn("Battalion resolve package", runner.call_args.args[0][-1])
+        metadata = read_yaml(self.workspace / "resolutions" / "RES-001" / "metadata.yaml")
+        self.assertEqual(metadata["executor"], "codex")
+        self.assertEqual(metadata["executor_name"], "Codex")
+        self.assertEqual(metadata["status"], "COMPLETED")
+        self.assertEqual(metadata["return_code"], 0)
+        self.assertEqual(metadata["next_step"], "Run battalion assure after reviewing executor corrections.")
+
+    def test_resolve_package_generation_is_deterministic(self):
+        self.create_resolve_context()
+        self.run_cli("resolve")
+        first = (self.workspace / "resolutions" / "RES-001" / "instructions.md").read_text(encoding="utf-8")
+        first_metadata = read_yaml(self.workspace / "resolutions" / "RES-001" / "metadata.yaml")
+        self.run_cli("resolve")
+        second = (self.workspace / "resolutions" / "RES-002" / "instructions.md").read_text(encoding="utf-8")
+        second_metadata = read_yaml(self.workspace / "resolutions" / "RES-002" / "metadata.yaml")
+        self.assertEqual(first, second)
+        self.assertEqual(first_metadata["failed_findings"], second_metadata["failed_findings"])
+        self.assertEqual(first_metadata["assurance_sha256"], second_metadata["assurance_sha256"])
+
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
@@ -1593,6 +1789,287 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(result.status, "RED")
         self.assertTrue(any("wrong mission_id" in finding for finding in result.findings))
         self.assertIn("Mission: Audit trail is missing mission_initialized event", result.findings)
+
+    def test_assurance_generates_json_and_markdown_artifacts(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "Healthy", "timestamp": "2026-07-03T02:44:00.284Z"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "completed")
+        output = self.run_cli("assure")
+        self.assertTrue((self.workspace / "assurance.json").is_file())
+        self.assertTrue((self.workspace / "assurance.md").is_file())
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["engineering_result"]["status"], "GREEN")
+        self.assertEqual(data["engineering_result"]["checks"][0]["result"], "VERIFIED")
+        self.assertIn("Mission Assurance", (self.workspace / "assurance.md").read_text(encoding="utf-8"))
+        self.assertIn("Engineering Result: GREEN", output)
+        self.assertIn("Artifacts:", output)
+
+    def test_assurance_health_endpoint_status_mismatch_is_engineering_red(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "ok", "timestamp": "2026-07-03T02:44:00.284Z"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "pending")
+        result = self.result()
+        self.assertEqual((result.status, result.recommendation), ("RED", "NO-GO"))
+        self.assertEqual(result.engineering_result["status"], "RED")
+        self.assertEqual(result.governance_result["status"], "AMBER")
+        failed = [check for check in result.engineering_result["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+        self.assertIn('Expected response status field "Healthy"; observed "ok".', failed[0]["finding"])
+        self.assertIn("Update implementation or tests", failed[0]["recommendation"])
+        self.assertTrue(any("Required review is pending" in finding for finding in result.governance_result["findings"]))
+
+    def test_assurance_unable_to_verify_without_evidence_is_amber(self):
+        self.write_assurance_contract(["Structured logging behavior is enabled"], [], "completed", "planned")
+        result = self.result()
+        self.assertEqual((result.status, result.recommendation), ("AMBER", "NO-GO"))
+        self.assertEqual(result.engineering_result["status"], "AMBER")
+        self.assertEqual(result.engineering_result["summary"]["unable_to_verify"], 1)
+        check = result.engineering_result["checks"][0]
+        self.assertEqual(check["result"], "UNABLE_TO_VERIFY")
+        self.assertIn("Unable to verify acceptance criterion", check["finding"])
+
+    def test_assurance_engineering_findings_precede_governance_findings_in_cli(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "ok"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "pending")
+        output = self.run_cli("assure")
+        self.assertLess(output.index("Failed:"), output.index("Governance:"))
+        self.assertIn('Expected response status field "Healthy"; observed "ok".', output)
+        self.assertIn("Required review is pending", output)
+
+    def test_assurance_engineering_result_is_deterministic(self):
+        evidence = self.cwd / "evidence" / "health-response.json"
+        evidence.parent.mkdir()
+        evidence.write_text('{"status": "ok"}\n', encoding="utf-8")
+        self.write_assurance_contract(["Health endpoint returns status Healthy"], ["evidence/health-response.json"], "pending")
+        first = self.result().to_dict()
+        second = self.result().to_dict()
+        self.assertEqual(first["engineering_result"], second["engineering_result"])
+        first_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.result()
+        second_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.assertEqual(first_json["engineering_result"], second_json["engineering_result"])
+
+    def test_assure_performs_static_validation_by_default(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Health endpoint returns JSON response",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()) as runtime:
+            output = self.run_cli("assure")
+        runtime.assert_not_called()
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["engineering_result"]["summary"]["runtime_checks"], 0)
+        self.assertEqual(data["engineering_result"]["summary"]["static_checks"], 3)
+        self.assertEqual(data["engineering_result"]["status"], "AMBER")
+        self.assertIn("Runtime Checks: 0", output)
+
+    def test_assure_run_performs_runtime_validation(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Health endpoint returns JSON response",
+            "Response body status equals Healthy",
+            "Response body timestamp is ISO 8601 UTC",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()) as runtime:
+            output = self.run_cli("assure", "--run")
+        runtime.assert_called_once_with("http://127.0.0.1:48151/v1/health")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        engineering = data["engineering_result"]
+        self.assertEqual(engineering["status"], "GREEN")
+        self.assertEqual(engineering["summary"]["verified"], 4)
+        self.assertEqual(engineering["summary"]["runtime_checks"], 4)
+        self.assertTrue(all(check["result"] == "VERIFIED" for check in engineering["checks"]))
+        self.assertTrue(all(check["validation_mode"] == "runtime" for check in engineering["checks"]))
+        self.assertIn("Runtime Checks: 4", output)
+
+    def test_assure_run_detects_health_endpoint_status_contract_violation_without_manual_evidence(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Health endpoint returns JSON response",
+            "Response body status equals Healthy",
+            "Response body timestamp is ISO 8601 UTC",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        engineering = data["engineering_result"]
+        failed = [check for check in engineering["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(engineering["status"], "RED")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+        self.assertEqual(failed[0]["validation_mode"], "runtime")
+        self.assertRegex(failed[0]["execution_timestamp"], r"^\d{4}-\d{2}-\d{2}T")
+        self.assertIn('"status": "ok"', failed[0]["evidence"][0]["body"])
+        self.assertIn("Expected response status field", output)
+        self.assertIn("Observed:", output)
+
+    def test_assure_run_prints_runtime_target_and_concise_default_evidence(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run")
+        self.assertIn("Runtime Target:", output)
+        self.assertIn("Base URL: http://127.0.0.1:48151", output)
+        self.assertIn("Endpoint: /v1/health", output)
+        self.assertIn("Full URL: http://127.0.0.1:48151/v1/health", output)
+        self.assertIn('Expected: {"field": "status", "value": "Healthy"}', output)
+        self.assertIn('Observed: {"field": "status", "value": "ok"}', output)
+        self.assertIn("HTTP response (url=http://127.0.0.1:48151/v1/health, status=200", output)
+        self.assertNotIn("x-diagnostic", output)
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        evidence = data["engineering_result"]["checks"][1]["evidence"][0]
+        self.assertEqual(evidence["headers"]["x-diagnostic"], "full-header-value")
+
+    def test_assure_run_verbose_includes_full_runtime_evidence(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run", "--verbose")
+        self.assertIn("x-diagnostic", output)
+        self.assertIn('"headers": {"content-type": "application/json", "x-diagnostic": "full-header-value"}', output)
+
+    def test_assure_run_reports_stale_runtime_and_build_diagnostics_without_overriding_failure(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        (self.cwd / "src").mkdir()
+        (self.cwd / "dist").mkdir()
+        (self.cwd / "src" / "app.ts").write_text('response.json({ status: "Healthy" });\n', encoding="utf-8")
+        (self.cwd / "dist" / "app.js").write_text('response.json({ status: "ok" });\n', encoding="utf-8")
+        (self.cwd / "package.json").write_text(json.dumps({"scripts": {"build": "tsc", "test": "node --test dist"}}), encoding="utf-8")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            output = self.run_cli("assure", "--run")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        failed = [check for check in data["engineering_result"]["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+        self.assertTrue(any("running process may be stale" in item for item in failed[0]["diagnostics"]))
+        self.assertTrue(any("Build artifacts may be stale" in item for item in failed[0]["diagnostics"]))
+        self.assertIn("The running process may be stale", output)
+        self.assertIn("Build artifacts may be stale", output)
+        self.assertEqual(data["engineering_result"]["status"], "RED")
+
+    def test_assure_run_reports_missing_node_dependencies(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+        ], [], "completed", "planned")
+        (self.cwd / "package.json").write_text(json.dumps({"scripts": {"build": "tsc", "test": "tsx src/app.test.ts"}}), encoding="utf-8")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()):
+            output = self.run_cli("assure", "--run")
+        data = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))
+        diagnostics = data["engineering_result"]["diagnostics"]
+        self.assertIn("Dependencies are not installed. Run npm install, then rerun assurance.", diagnostics)
+        self.assertTrue(any("command not found: tsc" in item for item in diagnostics))
+        self.assertTrue(any("command not found: tsx" in item for item in diagnostics))
+        self.assertIn("Dependencies are not installed. Run npm install, then rerun assurance.", output)
+
+    def test_assure_run_eliminates_duplicated_findings(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            result = assure(self.workspace, run=True)
+        status_findings = [finding for finding in result.findings if 'Expected response status field "Healthy"; observed "ok".' in finding]
+        self.assertEqual(len(status_findings), 1)
+        self.assertEqual(len(result.engineering_result["checks"]), 2)
+
+    def test_assure_run_runtime_evidence_artifacts_are_deterministic(self):
+        self.write_assurance_contract([
+            "GET http://127.0.0.1:48151/v1/health returns HTTP 200",
+            "Response body status equals Healthy",
+        ], [], "completed", "planned")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response(status="ok")):
+            first = assure(self.workspace, run=True).engineering_result
+            first_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))["engineering_result"]
+            second = assure(self.workspace, run=True).engineering_result
+            second_json = json.loads((self.workspace / "assurance.json").read_text(encoding="utf-8"))["engineering_result"]
+        self.assertEqual(first, second)
+        self.assertEqual(first_json, second_json)
+        self.assertTrue(any(check["evidence"] for check in first["checks"]))
+
+    def test_assure_run_derives_localhost_url_from_project_documentation(self):
+        self.write_assurance_contract([
+            "A valid GET request returns HTTP 200",
+            "The response provides a machine-readable health result",
+        ], [], "completed", "planned")
+        readme = self.cwd / "README.md"
+        readme.write_text("Run curl http://127.0.0.1:3000/v1/health to validate the service.\n", encoding="utf-8")
+        with patch("battalion.assurance._runtime_http_get", return_value=runtime_http_response()) as runtime:
+            result = assure(self.workspace, run=True)
+        runtime.assert_called_once_with("http://127.0.0.1:3000/v1/health")
+        self.assertEqual(result.engineering_result["summary"]["runtime_checks"], 2)
+        self.assertTrue(all(check["result"] == "VERIFIED" for check in result.engineering_result["checks"]))
+
+    def test_assure_lifts_expected_health_status_from_mission_prompt_for_generic_criteria(self):
+        self.write_assurance_contract([
+            "The response provides a machine-readable health result",
+        ], [], "completed", "planned")
+        source = self.cwd / "src" / "app.ts"
+        source.parent.mkdir()
+        source.write_text('response.status(200).json({ status: "ok", timestamp: new Date().toISOString() });\n', encoding="utf-8")
+        result = assure(self.workspace)
+        failed = [check for check in result.engineering_result["checks"] if check["result"] == "FAILED"]
+        self.assertEqual(result.engineering_result["status"], "RED")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["expected"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(failed[0]["observed"], {"field": "status", "value": "ok"})
+
+    def test_assurance_does_not_treat_test_type_annotations_as_observed_response_status(self):
+        self.write_assurance_contract([
+            "The response provides a machine-readable health result",
+        ], [], "completed", "planned")
+        source = self.cwd / "src" / "app.ts"
+        source.parent.mkdir()
+        source.write_text('response.status(200).json({ status: "Healthy", timestamp: new Date().toISOString() });\n', encoding="utf-8")
+        test = self.cwd / "src" / "app.test.ts"
+        test.write_text(
+            "type HttpResponse = {\n"
+            "  status: number;\n"
+            "  body: string;\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        result = assure(self.workspace)
+        check = result.engineering_result["checks"][0]
+        self.assertEqual(check["result"], "VERIFIED")
+        self.assertEqual(check["observed"], {"field": "status", "value": "Healthy"})
+        self.assertEqual(check["evidence"], ["src/app.ts"])
+
+    def test_assure_static_verifies_common_project_artifacts(self):
+        self.write_assurance_contract([
+            "Application source is implemented in TypeScript",
+            "The application executes on Node.js",
+            "A documented application entrypoint starts successfully",
+            "A health endpoint exists",
+            "The response includes a timestamp in the clarified format",
+            "POST requests are rejected",
+            "Documentation explains how to run the solution",
+        ], [], "completed", "planned")
+        (self.cwd / "src").mkdir()
+        (self.cwd / "src" / "server.ts").write_text(
+            'createApp().listen(3000); app.get("/v1/health", handler); app.all("/v1/health", methodNotAllowed); response.status(405).json({ error: { message: "Method not allowed" }}); response.json({ timestamp: new Date().toISOString() });\n',
+            encoding="utf-8",
+        )
+        (self.cwd / "package.json").write_text(json.dumps({"scripts": {"start": "node dist/server.js"}, "engines": {"node": ">=20"}}), encoding="utf-8")
+        (self.cwd / "README.md").write_text("Install and run with npm start.\n", encoding="utf-8")
+        result = assure(self.workspace)
+        checks = result.engineering_result["checks"]
+        self.assertEqual(result.engineering_result["summary"]["verified"], len(checks))
+        self.assertTrue(all(check["result"] == "VERIFIED" for check in checks))
 
     def test_green_succeeds_for_complete_contract(self):
         self.initialize()
