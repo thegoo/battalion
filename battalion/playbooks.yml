@@ -29,24 +29,36 @@ playbooks:
       - PATCH
       - DELETE
     leadingQuestions:
-      - id: request_response_contract
-        question: What request and response contract should the endpoint use?
+      - id: purpose
+        question: What is the purpose of this API endpoint?
         examples:
-          - Request parameters
+          - Retrieve customer email
+          - Create a resource
+          - Return health status
+      - id: data_flow
+        question: What request and response data should the endpoint use?
+        examples:
+          - Path parameters
+          - Request body
           - Response fields
-          - Status codes
-      - id: authorization
+      - id: operations
+        question: Which HTTP operation and route should be supported?
+        examples:
+          - GET /customers/{id}/email
+          - POST /orders
+          - PATCH /profile
+      - id: security
         question: What authorization rules apply to this endpoint?
         examples:
           - Administrators only
           - Current user only
           - Public endpoint
-      - id: error_behavior
-        question: What error behavior should be implemented?
+      - id: volume
+        question: What usage volume or performance expectation matters?
         examples:
-          - Not found
-          - Invalid input
-          - Unauthorized
+          - Low internal usage
+          - Public high traffic
+          - Unknown
     defaultAssumptions:
       - Existing API conventions apply.
       - Existing authentication middleware applies unless the requirement says otherwise.
@@ -231,7 +243,7 @@ playbooks:
       - README
       - README.md
     leadingQuestions:
-      - id: purpose
+      - id: intent
         question: What is the intent of this README?
         examples:
           - Initialize repository with blank README
