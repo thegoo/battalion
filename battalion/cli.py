@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .agents import standing_team
-from .assessment import infer_attributes, write_assessment
+from .assessment import infer_attributes, write_assessment, write_mission_context_artifacts
 from .assurance import assure
 from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
@@ -87,6 +87,15 @@ def read_requirement_input(value: str, cwd: Path) -> str:
     if candidate.is_file():
         return candidate.read_text(encoding="utf-8").strip()
     return value.strip()
+
+
+def requirement_input_path(value: str, cwd: Path):
+    if not value:
+        return None
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    return str(candidate) if candidate.is_file() else None
 
 
 def plan(args, cwd):
@@ -818,7 +827,9 @@ def status(args, cwd):
 
 
 def assessment(args, cwd):
+    requirement_path = None
     if args.requirement:
+        requirement_path = requirement_input_path(args.requirement, cwd)
         requirement = read_requirement_input(args.requirement, cwd)
         if not requirement:
             raise SystemExit("Requirement cannot be empty.")
@@ -827,15 +838,13 @@ def assessment(args, cwd):
             workspace = initialize_mission_workspace(cwd, requirement, title="Requirement Assessment", objective=requirement)
         else:
             ledger = read_yaml(workspace / "ledger.yaml")
-            if ledger.get("requirements"):
-                raise SystemExit("A mission contract already exists. Run battalion assess without --requirement to assess the current mission.")
             mission = read_yaml(workspace / "mission.yaml")
             mission["title"] = mission.get("title") or "Requirement Assessment"
             mission["objective"] = requirement
             mission["mission_prompt"] = requirement
             mission.setdefault("original_prompt", requirement)
             write_yaml(workspace / "mission.yaml", mission)
-            ledger["mission_prompt"] = requirement
+            ledger = {"mission_id": mission.get("id", "M-001"), "mission_prompt": requirement, "requirements": [], "assumptions": [], "risks": []}
             write_yaml(workspace / "ledger.yaml", ledger)
             append_event(workspace, "assessment_requirement_updated", {"mission_id": mission.get("id", "M-001")})
     else:
@@ -852,6 +861,10 @@ def assessment(args, cwd):
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print_assessment_summary(result)
+    artifacts = write_mission_context_artifacts(workspace, result, requirement_path=requirement_path)
+    print("\nArtifacts")
+    print(f"- Mission Context: {artifacts['mission_context'].relative_to(cwd)}")
+    print(f"- Assessment Report: {artifacts['assessment_md'].relative_to(cwd)}")
 
 
 def print_assessment_summary(result):

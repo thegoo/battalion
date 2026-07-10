@@ -922,6 +922,76 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Assessment Result", output)
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Create a blank README.md to initialize the repo")
 
+    def mission_contexts(self):
+        return sorted((self.workspace / "missions").glob("*/mission-context.yml"))
+
+    def test_assess_writes_mission_context_for_clarification_required_mission(self):
+        output = self.run_cli("assess", "--requirement", "Create README.md.")
+        contexts = self.mission_contexts()
+        self.assertEqual(len(contexts), 1)
+        context = read_yaml(contexts[0])
+
+        self.assertIn(f"Mission Context: {contexts[0].relative_to(self.cwd)}", output)
+        self.assertEqual(context["schemaVersion"], 1)
+        self.assertEqual(context["mission"]["status"], "clarification_required")
+        self.assertTrue(context["mission"]["id"].endswith("create-readme-md"))
+        self.assertEqual(context["source"]["requirement"], "Create README.md.")
+        self.assertIsNone(context["source"]["requirementPath"])
+        self.assertEqual(context["classification"], {"parent": "documentation", "subtype": "readme", "confidence": "high"})
+        self.assertEqual(context["intent"]["summary"], "Create a README.md file.")
+        self.assertEqual(context["scope"]["in"], ["documentation"])
+        self.assertEqual(context["scope"]["out"], ["api", "data", "ui", "infrastructure"])
+        self.assertEqual(
+            [item["id"] for item in context["questions"]["unanswered"]],
+            ["readme.intent", "readme.audience", "readme.content_depth"],
+        )
+        self.assertEqual(context["questions"]["answered"], [])
+        self.assertEqual(context["assumptions"], [])
+        self.assertEqual(context["constraints"], [])
+        self.assertEqual(context["notes"], [])
+        self.assertNotIn("readiness", str(context).lower())
+        self.assertNotIn("assurance", str(context).lower())
+
+    def test_assess_writes_understood_mission_context_without_unanswered_questions(self):
+        self.run_cli("assess", "--requirement", "Create a blank README.md to initialize the repo.")
+        context = read_yaml(self.mission_contexts()[0])
+
+        self.assertEqual(context["mission"]["status"], "understood")
+        self.assertEqual(context["intent"]["summary"], "Create a blank README.md file to initialize the repository.")
+        self.assertEqual(context["questions"], {"unanswered": [], "answered": []})
+        self.assertIn("No application code changes are required.", context["assumptions"])
+
+    def test_assess_writes_requirement_path_for_file_input(self):
+        story = self.cwd / "story.md"
+        story.write_text("Create a blank README.md to initialize the repo.", encoding="utf-8")
+
+        self.run_cli("assess", "--requirement", str(story))
+        context = read_yaml(self.mission_contexts()[0])
+
+        self.assertEqual(context["source"]["requirement"], "Create a blank README.md to initialize the repo.")
+        self.assertEqual(context["source"]["requirementPath"], str(story))
+
+    def test_assess_creates_separate_mission_directories_per_run(self):
+        self.run_cli("assess", "--requirement", "Create a blank README.md to initialize the repo.")
+        self.run_cli("assess", "--requirement", "Create a blank README.md to initialize the repo.")
+
+        contexts = self.mission_contexts()
+        self.assertEqual(len(contexts), 2)
+        self.assertNotEqual(contexts[0].parent.name, contexts[1].parent.name)
+
+    def test_generic_api_mission_context_persists_unanswered_api_questions(self):
+        self.run_cli("assess", "--requirement", "Create API")
+        context = read_yaml(self.mission_contexts()[0])
+
+        self.assertEqual(context["mission"]["status"], "clarification_required")
+        self.assertEqual(context["classification"]["parent"], "api")
+        self.assertEqual(context["classification"]["subtype"], "endpoint")
+        self.assertEqual(context["intent"]["summary"], "Create or update the requested API endpoint.")
+        self.assertEqual(
+            [item["id"] for item in context["questions"]["unanswered"]],
+            ["api.purpose", "api.data_flow", "api.operations", "api.security", "api.volume"],
+        )
+
     def test_commands_discover_mission_from_process_current_directory(self):
         original_directory = Path.cwd()
         outside_repository = self.cwd / "arbitrary" / "hello-world"
@@ -1465,7 +1535,9 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("1. What is the intent of this README?", output)
         self.assertIn("2. Who is the intended audience?", output)
         self.assertIn("3. Should this be blank, lightweight, or detailed?", output)
-        self.assertTrue(output.strip().endswith("Recommendation\nAnswer mission questions before planning."))
+        self.assertIn("Recommendation\nAnswer mission questions before planning.", output)
+        self.assertIn("Artifacts\n- Mission Context: .battalion/missions/", output)
+        self.assertIn("- Assessment Report: .battalion/missions/", output)
         self.assertNotIn("Readiness", output)
         self.assertNotIn("Engineering Compatibility Disclaimer", output)
         self.assertNotIn("Mission Classification", output)
@@ -1486,7 +1558,8 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Mission Type\nDocumentation / README", output)
         self.assertIn("Mission Intent\nCreate a blank README.md file to initialize the repository.", output)
         self.assertIn("Questions\n- None", output)
-        self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
+        self.assertIn("Recommendation\nProceed to planning.", output)
+        self.assertIn("Artifacts\n- Mission Context: .battalion/missions/", output)
 
     def test_assess_api_cli_output_excludes_unrelated_later_phase_concerns(self):
         output = self.run_cli("assess", "--requirement", "Create GET /customers/{id}/email")
@@ -1495,7 +1568,8 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Existing data model contains the referenced field or entity.", output)
         self.assertIn("Existing authentication middleware applies unless the requirement says otherwise.", output)
         self.assertIn("Questions\n- None", output)
-        self.assertTrue(output.strip().endswith("Recommendation\nProceed to planning."))
+        self.assertIn("Recommendation\nProceed to planning.", output)
+        self.assertIn("Artifacts\n- Mission Context: .battalion/missions/", output)
         self.assertNotIn("deployment", output.lower())
         self.assertNotIn("runtime", output.lower())
         self.assertNotIn("ci/cd", output.lower())

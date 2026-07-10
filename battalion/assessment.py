@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 import yaml
 
 from .classification import AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
-from .storage import read_yaml
+from .storage import read_yaml, timestamp, write_yaml
 
 
 SCHEMA_VERSION = "battalion.assessment.v2"
@@ -374,7 +374,8 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
     scale = _detect_requirement_scale(text, domains)
     understanding = _requirement_understanding(text, domains, playbook_match)
     assumptions = _requirement_assumptions(text, domains, playbook_match)
-    questions = _playbook_questions(text, playbook_match) + _material_questions(text, domains)
+    question_details = _playbook_question_details(text, playbook_match)
+    questions = [_question_text(item) for item in question_details] + _material_questions(text, domains)
     questions = _dedupe(questions)
     out_of_scope = _playbook_out_of_scope(playbook_match) or _out_of_scope_domains(domains)
 
@@ -382,6 +383,11 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
         outcome = "CLARIFICATION_REQUIRED"
         confidence = "medium"
         questions = [f"Which mission type applies: {', '.join(playbook_match['tie_candidates'])}?"]
+        question_details = [{
+            "id": "mission.type",
+            "question": questions[0],
+            "examples": playbook_match["tie_candidates"],
+        }]
         recommendation = "Answer mission questions before planning."
     elif questions:
         outcome = "CLARIFICATION_REQUIRED"
@@ -423,6 +429,7 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
         "assumptions": assumptions,
         "blocking_ambiguities": questions,
         "questions": questions,
+        "question_details": question_details,
         "out_of_scope": out_of_scope,
         "recommendation": recommendation,
     }
@@ -501,7 +508,7 @@ def _requirement_assumptions(text: str, domains: List[str], playbook_match: Dict
     return _dedupe(assumptions)
 
 
-def _playbook_questions(text: str, playbook_match: Dict[str, Any]) -> List[str]:
+def _playbook_question_details(text: str, playbook_match: Dict[str, Any]) -> List[Dict[str, Any]]:
     playbook = playbook_match.get("playbook", {}) if isinstance(playbook_match.get("playbook"), dict) else {}
     questions = []
     for item in playbook.get("leadingQuestions", []) if isinstance(playbook.get("leadingQuestions"), list) else []:
@@ -512,11 +519,25 @@ def _playbook_questions(text: str, playbook_match: Dict[str, Any]) -> List[str]:
         if not question:
             continue
         examples = item.get("examples", [])
-        if isinstance(examples, list) and examples:
-            questions.append(f"{question} Examples: {', '.join(str(example) for example in examples)}.")
-        else:
-            questions.append(question)
+        questions.append({
+            "id": f"{_question_id_prefix(playbook_match)}.{question_id}",
+            "question": question,
+            "examples": [str(example) for example in examples] if isinstance(examples, list) else [],
+        })
     return questions
+
+
+def _question_id_prefix(playbook_match: Dict[str, Any]) -> str:
+    if playbook_match.get("parent") == "api":
+        return "api"
+    return playbook_match.get("subtype") or playbook_match.get("parent") or "mission"
+
+
+def _question_text(item: Dict[str, Any]) -> str:
+    examples = item.get("examples", [])
+    if examples:
+        return f"{item.get('question')} Examples: {', '.join(str(example) for example in examples)}."
+    return item.get("question", "")
 
 
 def _playbook_question_answered(text: str, playbook_match: Dict[str, Any], question_id: str) -> bool:
@@ -528,14 +549,20 @@ def _playbook_question_answered(text: str, playbook_match: Dict[str, Any], quest
             return True
         return False
     if key == "api.endpoint":
-        if question_id == "request_response_contract":
+        if question_id == "purpose":
+            return _contains(text, r"\bretrieve|return|get|add|update|delete|health|email\b") or _contains(text, r"/[a-z0-9_/{}/.-]+")
+        if question_id == "data_flow":
             return (
                 _contains(text, r"\bGET|POST|PUT|PATCH|DELETE\b") and _contains(text, r"/[a-z0-9_/{}/.-]+")
             ) or _contains(text, r"\bretrieve|return|get\b") and _contains(text, r"\bemail|status|health|json|response\b")
-        if question_id == "authorization":
-            return True
-        if question_id == "error_behavior":
-            return True
+        if question_id == "operations":
+            return (
+                _contains(text, r"\bGET|POST|PUT|PATCH|DELETE\b") and _contains(text, r"/[a-z0-9_/{}/.-]+")
+            ) or _contains(text, r"\bendpoint\b") and _contains(text, r"\bhealth|customer|email|retrieve|return\b")
+        if question_id == "security":
+            return _contains(text, r"/[a-z0-9_/{}/.-]+") or _contains(text, r"\bretrieve|return|get|health|email\b")
+        if question_id == "volume":
+            return _contains(text, r"/[a-z0-9_/{}/.-]+") or _contains(text, r"\bretrieve|return|get|health|email\b")
     if key == "data.model":
         if question_id == "entity":
             return _contains(text, r"\bcustomer|user|account|order|table|entity|model\b")
@@ -1258,6 +1285,94 @@ def write_assessment(workspace: Path) -> Dict[str, Any]:
     (workspace / "assessment.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (workspace / "assessment.md").write_text(render_assessment_markdown(result), encoding="utf-8")
     return result
+
+
+def write_mission_context_artifacts(workspace: Path, assessment: Dict[str, Any], requirement_path: str = None) -> Dict[str, Path]:
+    requirement = assessment.get("mission", {}).get("prompt") or ""
+    mission_id = _next_mission_context_id(workspace, requirement)
+    mission_dir = workspace / "missions" / mission_id
+    mission_dir.mkdir(parents=True, exist_ok=False)
+
+    (mission_dir / "requirement.md").write_text(requirement.strip() + "\n", encoding="utf-8")
+    (mission_dir / "assessment.json").write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (mission_dir / "assessment.md").write_text(render_assessment_markdown(assessment), encoding="utf-8")
+    context = build_mission_context(assessment, mission_id, requirement_path=requirement_path)
+    write_yaml(mission_dir / "mission-context.yml", context)
+    return {
+        "mission_dir": mission_dir,
+        "requirement": mission_dir / "requirement.md",
+        "assessment_json": mission_dir / "assessment.json",
+        "assessment_md": mission_dir / "assessment.md",
+        "mission_context": mission_dir / "mission-context.yml",
+    }
+
+
+def build_mission_context(assessment: Dict[str, Any], mission_id: str, requirement_path: str = None) -> Dict[str, Any]:
+    requirement_assessment = assessment.get("requirement_assessment", {})
+    mission_type = requirement_assessment.get("mission_type", {})
+    questions = requirement_assessment.get("question_details", [])
+    status = "clarification_required" if requirement_assessment.get("outcome") == "CLARIFICATION_REQUIRED" else "understood"
+    return {
+        "schemaVersion": 1,
+        "mission": {
+            "id": mission_id,
+            "status": status,
+            "createdAt": timestamp(),
+        },
+        "source": {
+            "requirement": assessment.get("mission", {}).get("prompt") or "",
+            "requirementPath": requirement_path,
+        },
+        "classification": {
+            "parent": mission_type.get("parent", "unknown"),
+            "subtype": mission_type.get("subtype", "unknown"),
+            "confidence": assessment.get("confidence", "low"),
+        },
+        "intent": {
+            "summary": requirement_assessment.get("mission_intent", ""),
+        },
+        "scope": {
+            "in": [_context_scope_name(value) for value in requirement_assessment.get("detected_domains", [])],
+            "out": [_context_scope_name(value) for value in requirement_assessment.get("out_of_scope", [])],
+        },
+        "questions": {
+            "unanswered": [
+                {
+                    "id": item.get("id"),
+                    "question": item.get("question"),
+                    "examples": item.get("examples", []),
+                }
+                for item in questions
+            ] if status == "clarification_required" else [],
+            "answered": [],
+        },
+        "assumptions": requirement_assessment.get("assumptions", []) if status == "understood" else [],
+        "constraints": [],
+        "notes": [],
+    }
+
+
+def _context_scope_name(value: str) -> str:
+    return "infrastructure" if value == "infra" else value
+
+
+def _next_mission_context_id(workspace: Path, requirement: str) -> str:
+    missions_dir = workspace / "missions"
+    missions_dir.mkdir(parents=True, exist_ok=True)
+    day = timestamp()[:10]
+    slug = _mission_slug(requirement)
+    counter = 1
+    while True:
+        mission_id = f"{day}-{counter:04d}-{slug}"
+        if not (missions_dir / mission_id).exists():
+            return mission_id
+        counter += 1
+
+
+def _mission_slug(requirement: str) -> str:
+    words = re.findall(r"[a-z0-9]+", requirement.lower())
+    slug = "-".join(words[:5])
+    return slug[:48].strip("-") or "mission"
 
 
 def _classification_evidence_text(item: Dict[str, Any]) -> str:
