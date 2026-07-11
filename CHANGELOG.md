@@ -16,6 +16,8 @@ All notable Battalion changes are summarized here. Product usage documentation l
 
 ### Changed
 
+- Realigned repository documentation and top-level structure around Doctrine v1.0.
+- Updated the editable-install compatibility shim to match the current package version and packaged catalogs.
 - Refined `battalion assess` to assess mission understanding only, without readiness, assurance, implementation, or project-wide engineering-obligation output.
 - Removed `battalion init` from the normal documented workflow; `battalion assess --requirement` is now the first meaningful command.
 - Improved `battalion assure --run` runtime target reporting and diagnostics.
@@ -24,6 +26,8 @@ All notable Battalion changes are summarized here. Product usage documentation l
 
 ### Documentation
 
+- Added Doctrine, roadmap, repository-structure, development-workflow, playbook, template, review-signal, skill, and source-layout documentation.
+- Added `REPOSITORY_REALIGNMENT_REPORT.md` for Doctrine v1.0 repository realignment.
 - Rewrote `README.md` as product documentation rather than implementation history.
 - Moved release and slice summaries into `CHANGELOG.md`.
 
