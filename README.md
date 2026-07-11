@@ -1,17 +1,23 @@
 # Battalion
 
-Battalion is a deterministic, local mission-governance layer for software delivery.
+Battalion is a deterministic engineering planning and evidence system.
 
-It turns an authoritative mission prompt into a traceable mission contract, assesses whether enough engineering information exists to proceed, produces an implementation-ready engineering specification, dispatches that specification to a selected executor, and independently verifies completed work through Mission Assurance.
+It turns mission context into an authoritative objective plan, supports executor or human implementation handoff, and verifies completed work through evidence reports.
 
-Battalion is designed around a simple doctrine:
+Battalion is designed around Doctrine v1.0:
 
-- Mission first.
-- Evidence over assertion.
-- Requirement traceability.
-- Trust nothing. Verify everything.
+- Battalion owns the WHAT.
+- Executors own the HOW.
+- Battalion reports facts.
+- Humans make engineering decisions.
+- Plans are authoritative execution artifacts.
+- Evidence Reports compare execution artifacts against Plans.
+- Battalion remains boring.
+- Battalion eats its own dogfood.
 
-Battalion does not call LLM APIs, choose models, configure agents, deploy systems, merge code, or approve work by assertion. It coordinates the mission contract and records evidence.
+Battalion does not call LLM APIs, choose models, configure executors, deploy systems, merge code, or approve work by assertion. It coordinates mission context, planning artifacts, and evidence.
+
+See [doctrine/README.md](doctrine/README.md) for the current doctrine.
 
 ## Installation
 
@@ -60,6 +66,31 @@ battalion report
 
 Use `battalion clarify` only when assessment reports open clarifications. Use `battalion assure` after implementation evidence and reviews exist.
 
+## Repository structure
+
+Battalion is organized around Doctrine v1.0 concepts:
+
+```text
+doctrine/        Product doctrine and operating principles.
+playbooks/       Mission playbook documentation and future external playbook assets.
+templates/       Artifact template documentation and future template assets.
+review-signals/  Review-signal documentation and future signal catalogs.
+skills/          Human/executor skill guidance and future reusable skill assets.
+docs/            Product and contributor documentation.
+src/             Reserved future source-layout target.
+battalion/       Current Python runtime package.
+examples/        Example Battalion mission workspaces.
+tests/           Deterministic regression tests.
+```
+
+The top-level concept directories are architectural intent and documentation surfaces. They are not current runtime package boundaries, import roots, or catalog search paths unless explicitly documented.
+
+Additional documentation:
+
+- [Objective Plan / Roadmap](docs/ROADMAP.md)
+- [Repository Structure](docs/repository-structure.md)
+- [Development Workflow](docs/development-workflow.md)
+
 ## Mission workspace
 
 Battalion stores mission state in a `.battalion` directory inside the current working directory.
@@ -87,7 +118,7 @@ Battalion artifacts are serialized truthfully:
 - `.json` files are proper JSON.
 - `.jsonl` files are JSON Lines.
 
-Multiline YAML values, such as mission prompts, are written as readable block scalars.
+Multiline YAML values, such as mission requirements, are written as readable block scalars.
 
 ## Commands
 
@@ -184,7 +215,7 @@ Creates the execution-ready engineering specification.
 battalion plan
 ```
 
-Planning requires assessment readiness of `READY` or `READY_WITH_RISK`. It writes:
+Planning currently consumes assessment readiness values of `READY` or `READY_WITH_RISK` as deterministic assessment signals. These values do not authorize execution, approve implementation, or replace the human decision to proceed. It writes:
 
 ```text
 .battalion/mission-plan.md
@@ -356,7 +387,7 @@ The overall result still uses:
 - confidence
 - traceable findings
 
-`GO` is impossible unless status is `GREEN`.
+These statuses are assurance signals and recommendations only. They do not deploy, merge, approve, block, or otherwise own the human engineering decision. `GO` is impossible unless status is `GREEN`.
 
 ### `battalion resolve`
 
@@ -405,7 +436,7 @@ battalion resolve --executor codex --mode auto
 The correction loop is:
 
 ```text
-Init
+Mission Context
 ↓
 Assess
 ↓
@@ -471,10 +502,10 @@ Every requirement must have acceptance criteria and required reviews. Completed 
 
 ## Mission classification
 
-Mission Classification is deterministic and catalog-driven. The attribute catalog lives at:
+Mission domain detection is deterministic and catalog-driven. The packaged attribute catalog lives at:
 
 ```text
-.battalion/attributes.yml
+battalion/attributes.yml
 ```
 
 Seeded attributes include:
@@ -490,7 +521,7 @@ Seeded attributes include:
 - `DOTNET`
 - `DOCKER`
 
-Each classification result records evidence, source labels, hit count, threshold, and decision. Assessment consumes detected attributes when applying Battalion-owned engineering obligations.
+Each classification result records evidence, source labels, hit count, threshold, and decision. Assessment uses this information only to understand mission scope and select relevant mission playbooks. It does not expand the mission into unrelated project-wide obligations.
 
 ## Assurance rules
 
@@ -500,11 +531,13 @@ Mission Assurance returns:
 - `AMBER / NO-GO` when mission structure is valid but work remains open, clarifications remain open, or reviews remain pending.
 - `RED / NO-GO` when required files are missing, schema is invalid, audit data is invalid, evidence is missing for completed work, or contract data is corrupted.
 
+These are assurance signals and recommendations. They never replace human decision authority.
+
 Failures are specific and traceable. Battalion does not emit generic assurance failures.
 
 ## Dispatcher doctrine
 
-The Dispatcher is the only authority allowed to advance runtime execution.
+The Dispatcher is the sole coordinator of mission state and executor assignments. It does not own human engineering decisions.
 
 Units do not:
 
@@ -513,15 +546,15 @@ Units do not:
 - approve themselves;
 - skip requirements.
 
-Units report facts. The Dispatcher decides the next action.
+Units report facts. The Dispatcher coordinates the next runtime action within the mission state machine.
 
 Sequential execution is enforced. Only one assignment may be active unless a future dispatcher explicitly authorizes parallel execution.
 
 ## Engineering compatibility doctrine
 
-Battalion assesses engineering readiness, not implementation correctness.
+Battalion reports compatibility obligations when they are relevant, but it does not decide framework, runtime, SDK, library, package, platform, operating system, cloud service, or standards compatibility for the engineering team.
 
-Framework, runtime, SDK, library, package, platform, operating system, cloud service, and standards compatibility remain the responsibility of the engineering team. Human engineers must validate compatibility during implementation, testing, and assurance.
+Human engineers must validate compatibility during implementation, testing, and assurance.
 
 Battalion does not maintain compatibility matrices or act as a dependency resolver.
 
@@ -562,7 +595,7 @@ battalion clarify
 battalion assess
 ```
 
-Planning requires readiness `READY` or `READY_WITH_RISK`.
+Planning currently requires readiness `READY` or `READY_WITH_RISK` as assessment signals. Humans still decide whether to proceed.
 
 ## Changelog
 

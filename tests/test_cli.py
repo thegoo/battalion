@@ -306,6 +306,40 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn('"battalion=battalion.cli:main"', setup_compatibility)
         self.assertIn('dependencies = ["PyYAML>=6.0,<7.0", "pytest>=8,<10"]', pyproject)
         self.assertIn('install_requires=["PyYAML>=6.0,<7.0", "pytest>=8,<10"]', setup_compatibility)
+        self.assertIn('version = "0.8.0"', pyproject)
+        self.assertIn('version="0.8.0"', setup_compatibility)
+        self.assertIn('battalion = ["attributes.yml", "playbooks.yml"]', pyproject)
+        self.assertIn('package_data={"battalion": ["attributes.yml", "playbooks.yml"]}', setup_compatibility)
+
+    def test_repository_doctrine_structure_is_documented(self):
+        repository = Path(__file__).resolve().parents[1]
+        expected_paths = [
+            "doctrine/README.md",
+            "docs/ROADMAP.md",
+            "docs/repository-structure.md",
+            "docs/development-workflow.md",
+            "playbooks/README.md",
+            "templates/README.md",
+            "review-signals/README.md",
+            "skills/README.md",
+            "src/README.md",
+            "REPOSITORY_REALIGNMENT_REPORT.md",
+        ]
+
+        for relative_path in expected_paths:
+            with self.subTest(path=relative_path):
+                self.assertTrue((repository / relative_path).is_file())
+
+        doctrine = (repository / "doctrine" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Battalion owns the WHAT", doctrine)
+        self.assertIn("Executors own the HOW", doctrine)
+        self.assertIn("Battalion remains boring", doctrine)
+        self.assertIn("Battalion eats its own dogfood", doctrine)
+
+        report = (repository / "REPOSITORY_REALIGNMENT_REPORT.md").read_text(encoding="utf-8")
+        for heading in ["## Summary", "## Kept", "## Refactored", "## Removed", "## Deferred", "## Risks", "## Recommendations"]:
+            self.assertIn(heading, report)
+        self.assertIn("Plan Template v1 / Dogfooded Plan Artifact", report)
 
     def test_cli_help_executes_successfully(self):
         output = StringIO()
