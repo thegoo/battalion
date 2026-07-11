@@ -215,7 +215,7 @@ Creates the execution-ready engineering specification.
 battalion plan
 ```
 
-Planning currently consumes assessment readiness values of `READY` or `READY_WITH_RISK` as deterministic assessment signals. These values do not authorize execution, approve implementation, or replace the human decision to proceed. It writes:
+Planning currently consumes assessment readiness values of `READY` or `READY_WITH_RISK` as deterministic assessment signals before rendering a Plan. The generated Plan does not include readiness classifications or proceed/no-proceed language. It writes:
 
 ```text
 .battalion/mission-plan.md
@@ -230,6 +230,10 @@ battalion plan \
 ```
 
 Planning records reference filenames but does not inspect, parse, summarize, or infer intent from architecture documents.
+
+Plan Template v1 is rendered into `.battalion/mission-plan.md`. The plan is the authoritative execution artifact for the mission and includes mission, objective, doctrine and constraints, assumptions, risks, factual planning status, explicit human decisions, traceable requirements with acceptance criteria, concrete deliverables, definitive out-of-scope items, ordered execution strategy, deterministic validation plan, evidence requirements, and definition of complete.
+
+Battalion recommendations are advisory signals only. They do not authorize execution, approve implementation, merge code, deploy systems, or replace human engineering decisions.
 
 Manual requirement entry remains available:
 
