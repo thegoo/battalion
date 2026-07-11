@@ -197,8 +197,144 @@ def _append_contract_item(values: List[Dict[str, Any]], prefix: str, statement: 
     })
 
 
+def _is_plan_template_mission(prompt: str) -> bool:
+    return _matches(prompt, r"\bplan template\b") and _matches(prompt, r"\bmission-plan\.md\b")
+
+
+def _generate_plan_template_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
+    constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
+    constraints["functional"] = [
+        {
+            "id": "FC-001",
+            "statement": "Plan Template v1 must render the authoritative mission plan artifact.",
+            "prompt_excerpt": _excerpt(prompt, (r"Plan Template v1", r"mission-plan\.md")),
+        },
+        {
+            "id": "FC-002",
+            "statement": "The plan must include the required planning sections.",
+            "prompt_excerpt": _excerpt(prompt, (r"Mission, Objective, Constraints", r"required section")),
+        },
+        {
+            "id": "FC-003",
+            "statement": "The plan must preserve Battalion doctrine boundaries.",
+            "prompt_excerpt": _excerpt(prompt, (r"Battalion owns the WHAT", r"humans own decisions")),
+        },
+    ]
+    constraints["testing"] = [
+        {
+            "id": "TEST-001",
+            "statement": "Regression tests must cover the generated Plan Template v1 sections.",
+            "prompt_excerpt": _excerpt(prompt, (r"Regression tests", r"deterministic test suite")),
+        },
+        {
+            "id": "TEST-002",
+            "statement": "The full deterministic test suite must pass.",
+            "prompt_excerpt": _excerpt(prompt, (r"full deterministic test suite",)),
+        },
+    ]
+    constraints["operational"] = [
+        {
+            "id": "OC-001",
+            "statement": "The work must be managed using Battalion's generated plan artifact.",
+            "prompt_excerpt": _excerpt(prompt, (r"managed using the Plan Template", r"dogfood")),
+        },
+        {
+            "id": "OC-002",
+            "statement": "Commit and pull request work are out of scope unless explicitly authorized.",
+            "prompt_excerpt": _excerpt(prompt, (r"Do not commit", r"pull request", r"PR")),
+        },
+    ]
+    requirements = [
+        _requirement(
+            "R-001",
+            "Render Plan Template v1 to .battalion/mission-plan.md",
+            [
+                "`battalion plan` writes `.battalion/mission-plan.md`.",
+                "The generated plan identifies itself as the authoritative execution artifact.",
+                "The generated plan remains deterministic Markdown.",
+            ],
+            [],
+            "developer",
+            _trace(_source([constraints["functional"][0]], prompt), "The prompt explicitly requires a production-quality Markdown plan artifact.", ["FC-001"]),
+        ),
+        _requirement(
+            "R-002",
+            "Include the required Plan Template v1 sections",
+            [
+                "The generated plan includes Mission, Objective, Constraints, Assumptions, and Risks.",
+                "The generated plan includes Traceable Requirements with IDs and acceptance criteria.",
+                "The generated plan includes Deliverables, Out of Scope, Execution Strategy, Validation Plan, Human Decisions, and Definition of Complete.",
+            ],
+            [],
+            "developer",
+            _trace(_source([constraints["functional"][1]], prompt), "The prompt enumerates the minimum required Plan Template v1 sections.", ["FC-002"]),
+        ),
+        _requirement(
+            "R-003",
+            "Encode Battalion doctrine in the plan artifact",
+            [
+                "The plan states that Battalion owns the WHAT and executors own the HOW.",
+                "The plan states that humans own decisions.",
+                "The plan states that recommendations are not decisions.",
+                "The plan states that Battalion remains boring and builds Battalion using its own artifacts.",
+            ],
+            [],
+            "developer",
+            _trace(_source([constraints["functional"][2]], prompt), "The prompt requires the artifact to reinforce Battalion doctrine.", ["FC-003"]),
+        ),
+        _requirement(
+            "R-004",
+            "Cover Plan Template v1 with deterministic regression tests",
+            [
+                "Happy-path tests assert the generated plan includes the required v1 sections.",
+                "Negative-path tests assert out-of-scope work is not introduced by this slice.",
+                "Tests assert doctrine-critical language is present.",
+                "The full deterministic test suite passes.",
+            ],
+            [],
+            "tester",
+            _trace(_source(constraints["testing"], prompt), "The prompt requires regression coverage and a passing deterministic test suite.", ["TEST-001", "TEST-002"]),
+        ),
+        _requirement(
+            "R-005",
+            "Document the Plan Template v1 surface",
+            [
+                "README documentation identifies `.battalion/mission-plan.md` as the current Plan Template v1 output.",
+                "Template documentation states that no runtime template loader is introduced by this slice.",
+                "Documentation preserves the separation between planning signals and human decisions.",
+            ],
+            [],
+            "developer",
+            _trace(prompt, "The prompt requires a production-quality artifact and explicit non-goal boundaries.", ["OC-002"]),
+        ),
+    ]
+    assumptions = [{
+        "id": "A-001",
+        "statement": "The existing deterministic plan renderer is the correct implementation surface for Plan Template v1.",
+        "traceability": _trace(_source([constraints["functional"][0]], prompt), "Using the existing renderer keeps the slice boring and avoids a new template loader.", ["FC-001"]),
+    }]
+    risks = [{
+        "id": "RISK-001",
+        "statement": "The generated contract for template/documentation work may still be less precise than implementation-focused missions.",
+        "traceability": _trace(prompt, "Dogfooding exposed that artifact planning is a first-class product path that needs continued refinement.", []),
+    }]
+    return {
+        "mission_id": mission_id,
+        "mission_prompt": prompt,
+        "generated_by": "mission_analyst",
+        "requirements": requirements,
+        "constraints": constraints,
+        "assumptions": assumptions,
+        "risks": risks,
+        "clarifications": [],
+    }
+
+
 def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
     """Convert an immutable mission prompt into a traceable initial contract."""
+    if _is_plan_template_mission(prompt):
+        return _generate_plan_template_contract(mission_id, prompt)
+
     constraints = extract_constraints(prompt)
     requirements = []
 

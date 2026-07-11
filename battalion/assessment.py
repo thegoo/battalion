@@ -585,6 +585,8 @@ def _playbook_question_answered(text: str, playbook_match: Dict[str, Any], quest
             return _contains(text, r"\bunit test|integration test|e2e|end[- ]to[- ]end|test suite\b")
         if question_id == "behavior_under_test":
             return _contains(text, r"\bfor|validate|verify|regression|happy|negative|failure\b")
+        if question_id == "test_location":
+            return _contains(text, r"\btests?/[a-z0-9_./-]+|tests?/test_[a-z0-9_./-]+|existing (?:test|regression)|regression tests?\b")
         return False
     if key == "documentation.adr":
         if question_id == "decision":

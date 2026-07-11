@@ -547,6 +547,63 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue(all(requirement["acceptance"] for requirement in requirements))
         self.assertTrue(all(all(criterion.strip() for criterion in requirement["acceptance"]) for requirement in requirements))
 
+    def test_plan_template_mission_generates_specific_contract(self):
+        self.run_cli(
+            "assess", "--requirement",
+            "Create Plan Template v1. Render the authoritative `.battalion/mission-plan.md` artifact with required sections, doctrine boundaries, regression tests, and no pull request work.",
+        )
+        ledger = read_yaml(self.ledger_path)
+        statements = [item["statement"] for item in ledger["requirements"]]
+
+        self.assertIn("Render Plan Template v1 to .battalion/mission-plan.md", statements)
+        self.assertIn("Include the required Plan Template v1 sections", statements)
+        self.assertIn("Encode Battalion doctrine in the plan artifact", statements)
+        self.assertIn("Cover Plan Template v1 with deterministic regression tests", statements)
+        self.assertIn("Document the Plan Template v1 surface", statements)
+        self.assertEqual(ledger["clarifications"], [])
+        test_requirement = next(item for item in ledger["requirements"] if item["statement"] == "Cover Plan Template v1 with deterministic regression tests")
+        self.assertTrue(any("Happy-path tests" in item for item in test_requirement["acceptance"]))
+        self.assertTrue(any("Negative-path tests" in item for item in test_requirement["acceptance"]))
+
+    def test_plan_template_output_pins_out_of_scope_boundaries(self):
+        self.run_cli(
+            "assess", "--requirement",
+            (
+                "Create Plan Template v1 by following Battalion doctrine and eating our own dogfood. "
+                "Render the authoritative `.battalion/mission-plan.md` artifact with required sections, "
+                "doctrine boundaries, regression tests, and no review engines, Evidence Report changes, "
+                "skill systems, catalog migration, integrations, commits, or PR work."
+            ),
+        )
+        assessment_path = self.workspace / "assessment.json"
+        assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
+        assessment["readiness"] = "READY_WITH_RISK"
+        assessment_path.write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        self.run_cli("plan")
+
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+        self.assertIn("## Out of Scope", plan)
+        for item in (
+            "- Review engines.",
+            "- Evidence Report changes.",
+            "- Skill systems.",
+            "- Catalog migration.",
+            "- Integrations.",
+            "- Runtime template loader.",
+            "- Dispatch behavior changes.",
+            "- Commit, push, merge, or pull request work unless explicitly authorized.",
+        ):
+            self.assertIn(item, plan)
+
+    def test_assess_requirement_retargets_existing_workspace_title(self):
+        self.initialize_with_prompt("Build a health endpoint.")
+        self.run_cli("assess", "--requirement", "Create Plan Template v1 for `.battalion/mission-plan.md`.")
+
+        mission = read_yaml(self.workspace / "mission.yaml")
+        self.assertEqual(mission["title"], "Create Plan Template v1 for `.battalion/mission-plan.md`.")
+        self.assertEqual(mission["original_prompt"], "Create Plan Template v1 for `.battalion/mission-plan.md`.")
+
     def test_mission_analyst_generates_assumptions_and_risks(self):
         self.initialize()
         self.run_cli("assess")
@@ -1129,31 +1186,29 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue(plan_path.is_file())
         plan = plan_path.read_text(encoding="utf-8")
         for heading in (
-            "# Mission", "## Background", "## Mission Objective", "## Business Outcome",
-            "## Readiness Summary", "## Mission Classification", "## Functional Requirements",
-            "## Non-Functional Requirements", "## Engineering Constraints", "## Architecture References",
-            "## Assumptions", "## Risks", "## Implementation Guidance", "## Suggested Work Breakdown",
-            "## Testing Strategy", "## Evidence Required", "## Definition of Done", "## Out of Scope",
-            "## Mission Success Criteria",
+            "# Mission", "## Objective", "## Doctrine and Constraints", "## Dependencies",
+            "## Security Requirements", "## Operational Requirements", "## Planning Status",
+            "## Assumptions", "## Risks", "## Human Decisions", "## Requirements",
+            "## Deliverables", "## Out of Scope", "## Execution Strategy", "## Validation Plan",
+            "## Evidence Required", "## Definition of Complete",
         ):
             self.assertIn(heading, plan)
         self.assertIn("entra-sso.md", plan)
         self.assertIn("api-security.md", plan)
-        self.assertIn("Implementation shall conform to these engineering references.", plan)
-        self.assertIn("READY_WITH_RISK", plan)
-        self.assertIn("REST_API", plan)
         self.assertIn("GET /health returns HTTP 200", plan)
         self.assertIn("The mission exists to provide a lightweight health endpoint", plan)
-        self.assertIn("Operators gain a simple, automatable signal for service health", plan)
-        self.assertIn("The service shall expose the clarified health endpoint as an operational readiness signal", plan)
-        self.assertIn("Prioritize a small, clear health-check surface", plan)
-        self.assertIn("Cover malicious or malformed input", plan)
-        self.assertIn("The service exposes the specified health endpoint", plan)
+        self.assertIn("Recommendations are not decisions.", plan)
+        self.assertIn("Humans decide whether to proceed, accept risk, defer, reject, or approve the work.", plan)
+        self.assertIn("Deterministic validation must prove each requirement by ID", plan)
+        self.assertIn("- Acceptance Criteria:", plan)
         self.assertIn("Current or explicitly specified technology", plan)
         self.assertIn("Technology compatibility must be validated", plan)
-        self.assertIn("No explicit performance requirements were identified during assessment.", plan)
+        self.assertIn("Open risks:", plan)
         self.assertNotIn("Implementation must satisfy", plan)
         self.assertNotIn("This mission delivers a TypeScript Node.js service", plan)
+        self.assertNotIn("READY_WITH_RISK", plan)
+        self.assertNotIn("## Definition of Done", plan)
+        self.assertNotIn("No explicit performance requirements were identified during assessment.", plan)
         self.assertIn("R-001", plan)
         self.assertIn("Generated execution-ready mission plan", output)
 
@@ -1185,8 +1240,10 @@ class BattalionCliTests(unittest.TestCase):
         assessment_path.write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         self.run_cli("plan")
         plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
-        self.assertIn("- **Readiness:** READY", plan)
-        self.assertIn("No architecture reference filenames were supplied for this mission.", plan)
+        self.assertIn("## Planning Status", plan)
+        self.assertIn("- Open assumptions:", plan)
+        self.assertNotIn("Readiness:", plan)
+        self.assertNotIn("No architecture reference filenames were supplied for this mission.", plan)
 
     def test_plan_never_fabricates_engineering_requirements(self):
         self.initialize_with_prompt("Build a command-line utility.")
@@ -1643,6 +1700,13 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Mission Type\nDocumentation / Open Knowledge", output)
         self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "documentation.open_knowledge")
         self.assertIn("Who is the intended audience?", output)
+
+    def test_testing_playbook_accepts_existing_regression_tests_as_location(self):
+        output = self.run_cli("assess", "--requirement", "Create regression tests in tests/test_cli.py to validate Plan Template v1 output.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "testing.automated")
+        self.assertNotIn("Where should the tests live?", output)
 
     def test_playbook_tie_returns_single_mission_type_clarification(self):
         output = self.run_cli("assess", "--requirement", "Create README API")
