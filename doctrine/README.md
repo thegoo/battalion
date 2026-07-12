@@ -45,6 +45,12 @@ Battalion should prefer deterministic files, explicit contracts, source-controll
 
 Battalion should use its own Plans and Evidence Reports to define, execute, and review Battalion work. Dogfooding is how the project proves that its artifacts are authoritative enough for real engineering decisions.
 
+## Dogfooding over speculation
+
+Friction discovered through real dogfooding outranks speculative roadmap work when it blocks use, corrupts mission intent, weakens evidence, or materially increases human effort.
+
+Dogfooding findings should be evaluated against mission impact and may supersede planned roadmap sequencing. Battalion should not chase every cosmetic issue, but real workflow friction is product evidence, not noise.
+
 ## Evidence over assertion
 
 Claims do not complete work. Battalion records acceptance criteria, required evidence, reviews, findings, and assurance results so completed work can be compared against the plan.
