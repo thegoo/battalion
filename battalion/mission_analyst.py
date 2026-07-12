@@ -205,6 +205,90 @@ def _is_readme_mission(prompt: str) -> bool:
     return _matches(prompt, r"\breadme(?:\.md)?\b")
 
 
+def _is_cli_workflow_mission(prompt: str) -> bool:
+    return any(_matches(prompt, pattern) for pattern in (
+        r"\bcli\b",
+        r"\bcommand\b",
+        r"\bsubcommand\b",
+        r"\bargument\b",
+        r"\bparser\b",
+        r"\bterminal\b",
+        r"\binteractive\b",
+        r"\brouting\b",
+        r"\bbattalion\s+[\"`]",
+    ))
+
+
+def _cli_workflow_decisions(prompt: str) -> Dict[str, bool]:
+    lower = prompt.lower()
+    strict_errors = all(term in lower for term in (
+        "no arguments",
+        "unsupported single-token",
+        "unquoted multi-token",
+        "reserved-command collisions",
+    ))
+    remove_assess = (
+        "remove assess" in lower
+        or "assess from public cli routing and help" in lower
+        or "assessment remains internal workflow logic only" in lower
+    )
+    quoted_multiline = "multiline" in lower or "quoted" in lower
+    return {
+        "strict_errors": strict_errors,
+        "remove_assess": remove_assess,
+        "quoted_multiline": quoted_multiline,
+        "only_bare_start": "only" in lower and "my requirement" in lower,
+    }
+
+
+def _has_planning_signal(prompt: str, constraints: Dict[str, List[Dict[str, str]]]) -> bool:
+    if any(constraints.get(category) for category in constraints):
+        return True
+    return any(term in prompt.lower() for term in SECURITY_TERMS) or _matches(
+        prompt,
+        r"\b(auth|authentication|authorization|jwt|login|password|token|permission|security|readme|adr|documentation|test|tests|database|schema|migration|ui|ux|cli|command|subcommand|parser|argument|terminal|interactive)\b",
+    )
+
+
+def _generate_unable_to_plan_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
+    traceability = _trace(
+        prompt,
+        "The mission did not match a supported planning shape or explicit constraint set; Battalion must not fabricate generic requirements.",
+        [],
+    )
+    return {
+        "mission_id": mission_id,
+        "mission_prompt": prompt,
+        "generated_by": "mission_analyst",
+        "planning_status": "insufficiently_understood",
+        "requirements": [],
+        "constraints": {category: [] for category in ("functional", "technical", "security", "testing", "operational")},
+        "assumptions": [],
+        "risks": [{
+            "id": "RISK-001",
+            "statement": "Battalion cannot produce an authoritative Plan because the mission type is insufficiently understood.",
+            "traceability": traceability,
+        }],
+        "clarifications": [{
+            "id": "Q-001",
+            "question": "What specific behavior, artifact, or system should change?",
+            "status": "open",
+            "answer": None,
+            "created_at": created_at,
+            "resolved_at": None,
+            "resolved_by": None,
+            "traceability": traceability,
+            "history": [{
+                "action": "created",
+                "status": "open",
+                "value": "What specific behavior, artifact, or system should change?",
+                "actor": "mission_analyst",
+                "timestamp": created_at,
+            }],
+        }],
+    }
+
+
 def _generate_plan_template_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
     constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
     constraints["functional"] = [
@@ -422,14 +506,177 @@ def _generate_readme_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
     }
 
 
+def _generate_cli_workflow_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
+    decisions = _cli_workflow_decisions(prompt)
+    constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
+    constraints["functional"] = [
+        {
+            "id": "FC-001",
+            "statement": "Bare requirement invocation must route to the assessment workflow.",
+            "prompt_excerpt": _excerpt(prompt, (r"battalion\s+[\"`]", r"assessment command", r"primary interface")),
+        },
+        {
+            "id": "FC-002",
+            "statement": "Existing explicit Battalion subcommands must remain distinguishable.",
+            "prompt_excerpt": _excerpt(prompt, (r"Preserve all existing", r"all other aspects", r"subcommand")),
+        },
+        {
+            "id": "FC-003",
+            "statement": "Interactive assessment behavior must be preserved.",
+            "prompt_excerpt": _excerpt(prompt, (r"interactively", r"answers", r"questions")),
+        },
+        {
+            "id": "FC-004",
+            "statement": "Automatic initialization and authoritative Plan generation must remain in the same flow.",
+            "prompt_excerpt": _excerpt(prompt, (r"automatically initialize", r"authoritative Plan", r"same flow")),
+        },
+    ]
+    constraints["testing"] = [{
+        "id": "TEST-001",
+        "statement": "Regression tests must cover command routing, interaction preservation, and parser collision risks.",
+        "prompt_excerpt": _excerpt(prompt, (r"preserving", r"command", r"interactive", r"Plan generation")),
+    }]
+    requirements = [
+        _requirement(
+            "R-001",
+            "Handle bare requirement routing to assessment",
+            [
+                (
+                    '`battalion "My requirement."` is the only supported mission-start path.'
+                    if decisions["only_bare_start"]
+                    else '`battalion "My requirement."` is treated as mission text, not an invalid command.'
+                ),
+                "Bare mission text executes the existing assessment workflow.",
+                "Successful bare requirement invocation enters assessment.",
+                "Reserved command names still invoke their explicit command handlers.",
+            ],
+            [_review("architect", "Validate command routing boundaries and parser behavior.")],
+            "developer",
+            _trace(_source([constraints["functional"][0]], prompt), "The prompt makes the bare Battalion invocation the primary user interface.", ["FC-001"]),
+        ),
+        _requirement(
+            "R-002",
+            "Define parser errors, reserved commands, and collision behavior" if decisions["strict_errors"] else "Preserve explicit subcommands and command-name collision behavior",
+            [
+                "Existing explicit subcommands such as review, status, plan, and evidence-report remain callable.",
+                *(
+                    [
+                        "No arguments produce a clear error.",
+                        "Unsupported single-token input such as `battalion frobnicate` produces a clear error.",
+                        "Unquoted multi-token junk produces a clear error.",
+                        "Reserved-command collisions are handled clearly and deterministically.",
+                        "Quoted and multiline natural-language requirements are accepted as valid mission arguments.",
+                    ]
+                    if decisions["strict_errors"]
+                    else ["Command-like requirement text that is not a known subcommand fails or dispatches clearly according to documented behavior."]
+                ),
+                "Parser regression tests cover bare requirement text and explicit subcommands.",
+            ],
+            [_review("architect", "Confirm the parser change does not break existing command semantics.")],
+            "developer",
+            _trace(_source([constraints["functional"][1]], prompt), "The prompt requires existing behavior to remain intact while changing the primary UX.", ["FC-002"]),
+        ),
+        _requirement(
+            "R-003",
+            "Preserve interactive assessment and structured answers",
+            [
+                "Required questions are asked in one interactive session.",
+                "Questions use ordinal numbering rather than exposing Q-IDs.",
+                "Human answers are stored as structured answer context.",
+                "The configured five-question cap remains enforced.",
+            ],
+            [_review("ux", "Validate first-run terminal interaction clarity.")],
+            "developer",
+            _trace(_source([constraints["functional"][2]], prompt), "The prompt explicitly preserves interactive answer gathering.", ["FC-003"]),
+        ),
+        _requirement(
+            "R-004",
+            "Preserve automatic initialization and Plan generation",
+            [
+                "No separate initialization command is required for the bare invocation path.",
+                "Assessment artifacts are written before the Plan is generated.",
+                "The authoritative `.battalion/mission-plan.md` is generated when assessment completes.",
+            ],
+            [_review("tester", "Validate end-to-end first-run output artifacts.")],
+            "developer",
+            _trace(_source([constraints["functional"][3]], prompt), "The prompt requires initialization, assessment, and Plan generation in one flow.", ["FC-004"]),
+        ),
+        _requirement(
+            "R-005",
+            "Remove public assess command and document intent-first intake" if decisions["remove_assess"] else "Decide and document assess compatibility",
+            [
+                *(
+                    [
+                        "`assess` is removed from public CLI routing and help.",
+                        "Assessment remains internal workflow logic only.",
+                    ]
+                    if decisions["remove_assess"]
+                    else ["`assess` is either removed from the primary user path or retained only as a documented compatibility/advanced path."]
+                ),
+                "README and CLI help present the bare invocation as the primary start path.",
+                "Documentation avoids requiring users to know Battalion's internal assessment phase.",
+            ],
+            [_review("ux", "Confirm the documented user journey is intent-first.")],
+            "developer",
+            _trace(prompt, "The mission asks that users not need to know or enter an assessment command.", ["FC-001", "FC-002"]),
+        ),
+        _requirement(
+            "R-006",
+            "Cover CLI UX routing with deterministic tests",
+            [
+                "Tests cover bare requirement invocation.",
+                "Tests cover explicit subcommands still routing correctly.",
+                "Tests cover interactive questions and structured answers.",
+                "Tests cover automatic initialization and Plan generation.",
+                "Tests cover command-name collision or reserved-word behavior.",
+                "The full deterministic test suite passes.",
+            ],
+            [_review("tester", "Confirm routing and interaction regression coverage is reproducible.")],
+            "tester",
+            _trace(_source(constraints["testing"], prompt), "The parser and first-run UX change requires regression coverage.", ["TEST-001"]),
+        ),
+    ]
+    assumptions = [{
+        "id": "A-001",
+        "statement": "The existing assessment workflow remains the correct internal implementation path for mission intake.",
+        "traceability": _trace(prompt, "The prompt changes the user-facing invocation but preserves assessment, questions, and Plan generation behavior.", ["FC-001", "FC-003", "FC-004"]),
+    }]
+    risks = [
+        {
+            "id": "RISK-001",
+            "statement": "Bare mission text could collide with existing subcommand names or parser expectations.",
+            "traceability": _trace(_source([constraints["functional"][1]], prompt), "Changing default command routing can affect how reserved words and unknown commands are interpreted.", ["FC-002"]),
+        },
+        {
+            "id": "RISK-002",
+            "statement": "Shell quoting for multiline requirements may remain confusing even after the CLI routing change.",
+            "traceability": _trace(prompt, "The dogfood prompt uses quoted multiline requirement text at the terminal.", ["FC-001"]),
+        },
+    ]
+    return {
+        "mission_id": mission_id,
+        "mission_prompt": prompt,
+        "generated_by": "mission_analyst",
+        "requirements": requirements,
+        "constraints": constraints,
+        "assumptions": assumptions,
+        "risks": risks,
+        "clarifications": [],
+    }
+
+
 def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
     """Convert an immutable mission prompt into a traceable initial contract."""
     if _is_plan_template_mission(prompt):
         return _generate_plan_template_contract(mission_id, prompt)
     if _is_readme_mission(prompt):
         return _generate_readme_contract(mission_id, prompt)
+    if _is_cli_workflow_mission(prompt):
+        return _generate_cli_workflow_contract(mission_id, prompt)
 
     constraints = extract_constraints(prompt)
+    if not _has_planning_signal(prompt, constraints):
+        return _generate_unable_to_plan_contract(mission_id, prompt, created_at)
     requirements = []
 
     def append(statement, acceptance, reviews, owner, items, rationale):

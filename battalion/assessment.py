@@ -17,7 +17,7 @@ ENGINEERING_COMPATIBILITY_DISCLAIMER = (
 )
 READINESS_LEVELS = ("NOT_READY", "PARTIALLY_READY", "READY_WITH_RISK", "READY")
 ASSESSMENT_OUTCOMES = ("UNDERSTOOD", "PROCEED_WITH_ASSUMPTIONS", "CLARIFICATION_REQUIRED")
-MISSION_DOMAINS = ("api", "data", "ui", "infra", "security", "documentation", "testing", "unknown")
+MISSION_DOMAINS = ("api", "data", "ui", "cli", "infra", "security", "documentation", "testing", "unknown")
 MISSION_SCALES = ("task", "slice", "user_story", "feature", "epic", "unknown")
 PLAYBOOKS_PATH = Path(__file__).with_name("playbooks.yml")
 RECOMMENDATIONS = (
@@ -340,6 +340,7 @@ def _title_label(value: str) -> str:
     labels = {
         "api": "API",
         "ui": "UI",
+        "cli": "CLI",
         "adr": "ADR",
         "readme": "README",
         "open_knowledge": "Open Knowledge",
@@ -393,6 +394,16 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
         outcome = "CLARIFICATION_REQUIRED"
         confidence = "high" if playbook_match["status"] == "classified" else ("medium" if domains != ["unknown"] else "low")
         recommendation = "Answer mission questions before planning."
+    elif domains == ["unknown"] and playbook_match["status"] == "unclassified":
+        outcome = "CLARIFICATION_REQUIRED"
+        confidence = "low"
+        questions = ["What specific behavior, artifact, or system should change?"]
+        question_details = [{
+            "id": "mission.behavior",
+            "question": questions[0],
+            "examples": [],
+        }]
+        recommendation = "Provide more specific mission intent before planning."
     elif assumptions:
         outcome = "PROCEED_WITH_ASSUMPTIONS"
         confidence = "high" if domains != ["unknown"] else "medium"
@@ -440,6 +451,7 @@ def _detect_requirement_domains(text: str) -> List[str]:
         ("api", r"\b(endpoint|api|route|get|post|put|patch|delete|http|rest)\b"),
         ("data", r"\b(database|schema|migration|column|entity|model|table|sql)\b"),
         ("ui", r"\b(screen|page|form|button|ux|ui|modal|frontend|react|view)\b"),
+        ("cli", r"\b(cli|command|subcommand|parser|argument|flag|terminal|interactive|prompt|routing|console)\b"),
         ("infra", r"\b(deploy|deployment|docker|container|kubernetes|terraform|pipeline|infrastructure|hosting|azure app service|app service)\b"),
         ("security", r"\b(auth|jwt|oauth|permission|security|encrypt|secret|owasp|authorization|authentication)\b"),
         ("documentation", r"\b(documentation|readme|markdown|docs?|installation instructions)\b"),
@@ -474,6 +486,8 @@ def _requirement_understanding(text: str, domains: List[str], playbook_match: Di
         values.append("Data/schema change")
     if "ui" in domains:
         values.append("User interface change")
+    if "cli" in domains:
+        values.append("CLI workflow or command-routing change")
     if "documentation" in domains:
         if _contains(text, r"\breadme(?:\.md)?\b") and _contains(text, r"\bcreate\b"):
             values.append("Create a README documentation artifact.")
@@ -485,7 +499,7 @@ def _requirement_understanding(text: str, domains: List[str], playbook_match: Di
         values.append("Testing or validation work")
     if "security" in domains:
         values.append("Security-sensitive behavior")
-    if "ui" not in domains:
+    if "ui" not in domains and "cli" not in domains:
         values.append("No UI detected")
     return _dedupe(values) or ["Requirement type is not yet classified"]
 
@@ -505,6 +519,8 @@ def _requirement_assumptions(text: str, domains: List[str], playbook_match: Dict
         assumptions.append("Existing database migration conventions apply.")
     if "ui" in domains:
         assumptions.append("Existing design system and UI conventions apply.")
+    if "cli" in domains:
+        assumptions.append("Existing command semantics and terminal workflows apply unless the requirement says otherwise.")
     return _dedupe(assumptions)
 
 
@@ -575,6 +591,16 @@ def _playbook_question_answered(text: str, playbook_match: Dict[str, Any], quest
             return _contains(text, r"\bstyling|style|button|form|modal|page|component\b")
         if question_id in {"states", "data_dependency", "accessibility_validation"}:
             return True
+    if key == "cli.workflow":
+        if question_id == "entrypoint":
+            return _contains(text, r"\bbattalion\b|`[^`]+`|\"[^\"]+\"|\bcommand\b|\bsubcommand\b")
+        if question_id == "preserved_commands":
+            return _contains(text, r"\bpreserve|remain|existing|all other|review|status|evidence|plan|assess\b")
+        if question_id == "interaction":
+            return _contains(text, r"\binteractive|question|answer|prompt|same flow|same run|plan generation\b")
+        if question_id == "compatibility":
+            return _contains(text, r"\bremove|removal|compatibility|alias|hidden|keep|deprecat|should not have to know or enter an assessment command")
+        return False
     if key == "infrastructure.deployment":
         if question_id == "target_environment":
             return _contains(text, r"\bazure app service|app service|kubernetes|docker|container|environment\b")
@@ -619,6 +645,8 @@ def _mission_intent(text: str, playbook_match: Dict[str, Any]) -> str:
         return "Create or update the requested data model change."
     if key == "ui.component":
         return "Create or update the requested UI component."
+    if key == "cli.workflow":
+        return "Create or update the requested CLI workflow."
     if key == "infrastructure.deployment":
         return "Create or update the requested deployment capability."
     if key == "testing.automated":
@@ -1065,6 +1093,28 @@ def assess(workspace: Path) -> Dict[str, Any]:
     ledger = read_yaml(workspace / "ledger.yaml")
     requirement_text = _requirement_text_with_human_answers(mission, ledger)
     requirement_assessment = assess_requirement_text(requirement_text)
+    if ledger.get("planning_status") in {"invalid_human_decisions", "conflicting_human_decisions"}:
+        questions = [
+            item.get("question", "Resolve human decision data before planning.")
+            for item in ledger.get("clarifications", [])
+            if isinstance(item, dict) and item.get("status") == "open"
+        ]
+        requirement_assessment = {
+            **requirement_assessment,
+            "outcome": "CLARIFICATION_REQUIRED",
+            "confidence": "low",
+            "questions": questions or ["Resolve human decision data before planning."],
+            "question_details": [
+                {
+                    "id": item.get("id"),
+                    "question": item.get("question"),
+                    "examples": [],
+                }
+                for item in ledger.get("clarifications", [])
+                if isinstance(item, dict) and item.get("status") == "open"
+            ],
+            "recommendation": "Resolve human decision data before planning.",
+        }
     classification = classify_mission(mission, ledger, _attribute_catalog(workspace))
     attribute_sources = _attribute_sources_from_classification(classification)
     attributes = sorted(classification["detected_attributes"])

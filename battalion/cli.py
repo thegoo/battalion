@@ -615,6 +615,10 @@ def _implementation_guidance(mission, requirements, constraints, architecture_re
         lines.append("Prioritize the deterministic plan artifact contract and keep the implementation inside the existing `battalion plan` renderer.")
         lines.append("Improve the template when dogfooding exposes ambiguity, stale state, or weak executor guidance.")
         lines.append("Do not introduce a runtime template loader, review engine, evidence report change, skill system, catalog migration, integration, commit, or pull request in this slice.")
+    elif _has_text(text, r"\bcli\b|\bcommand\b|\bsubcommand\b|\bparser\b|\bargument\b|\bterminal\b|\bbattalion\s+[\"`]"):
+        lines.append("Prioritize the command-routing and terminal UX contract while preserving existing explicit subcommands.")
+        lines.append("Keep the existing assessment workflow as the internal behavior unless the Plan explicitly says otherwise.")
+        lines.append("Do not introduce unrelated application, API, deployment, or integration behavior for this CLI UX slice.")
     elif constraints.get("functional") and _has_text(text, r"health"):
         lines.append("Prioritize a small, clear health-check surface that communicates service availability without broadening the API beyond the mission contract.")
     elif constraints.get("functional"):
@@ -654,6 +658,24 @@ def _work_breakdown(requirements, constraints):
             "",
             "Cover the generated artifact with deterministic tests and document the current Plan Template v1 surface.",
         ]
+    if any("CLI" in requirement.get("statement", "") or "command" in requirement.get("statement", "").lower() or "subcommand" in requirement.get("statement", "").lower() for requirement in requirements):
+        return [
+            "### Phase 1 - Command contract",
+            "",
+            "Define the bare invocation path, reserved subcommand behavior, and compatibility stance for `assess`.",
+            "",
+            "### Phase 2 - Parser and workflow routing",
+            "",
+            "Update CLI routing so bare mission text enters assessment while explicit subcommands remain stable.",
+            "",
+            "### Phase 3 - Interactive flow preservation",
+            "",
+            "Validate automatic initialization, ordinal questions, structured answers, reassessment, and Plan generation.",
+            "",
+            "### Phase 4 - Regression and documentation",
+            "",
+            "Add routing and interaction tests, update help/README guidance, and record dogfood evidence.",
+        ]
     phases = [
         ("Phase 1 — Project initialization", "Establish the application structure required by the assessed mission."),
         ("Phase 2 — Core implementation", "Implement the functional requirements and acceptance criteria."),
@@ -681,6 +703,15 @@ def _execution_strategy_lines(mission, requirements, constraints, architecture_r
             "5. Add or update deterministic tests that assert section order, doctrine-critical language, requirement traceability, and omitted out-of-scope systems.",
             "6. Update documentation for the current `.battalion/mission-plan.md` Plan Template v1 surface.",
             "7. Run the full deterministic test suite and record validation evidence.",
+        ]
+    if _has_text(text, r"\bcli\b|\bcommand\b|\bsubcommand\b|\bparser\b|\bargument\b|\bterminal\b|\bbattalion\s+[\"`]"):
+        return [
+            "1. Confirm the desired bare invocation and the compatibility decision for `assess`.",
+            "2. Update parser routing so bare requirement text runs the existing assessment workflow.",
+            "3. Preserve explicit subcommands and add collision tests for command-like input.",
+            "4. Validate interactive questions, structured answers, automatic initialization, and same-run Plan generation.",
+            "5. Update CLI help, README guidance, and regression coverage.",
+            "6. Run the full deterministic test suite and record validation evidence.",
         ]
     lines = [
         "1. Review the authoritative Plan and resolve any open human decisions that block implementation.",
@@ -799,6 +830,15 @@ def _out_of_scope_lines(mission):
             "- Dispatch behavior changes.",
             "- Commit, push, merge, or pull request work unless explicitly authorized.",
         ]
+    if _has_text(text, r"\bcli\b|\bcommand\b|\bsubcommand\b|\bparser\b|\bargument\b|\bterminal\b|\bbattalion\s+[\"`]"):
+        return [
+            "- Review engine changes.",
+            "- Evidence Report changes.",
+            "- Executor dispatch changes.",
+            "- Integrations.",
+            "- Application, API, data, or deployment behavior unrelated to CLI routing.",
+            "- Autonomous decisions.",
+        ]
     return [
         "- Planning does not dispatch work.",
         "- Planning does not execute work.",
@@ -815,6 +855,12 @@ def _success_criteria(mission, requirements, constraints):
         lines.append("- `battalion plan` produces a deterministic `.battalion/mission-plan.md` artifact with the required Plan Template v1 sections.")
         lines.append("- The generated plan clearly separates Battalion recommendations from human decisions.")
         lines.append("- Regression tests and documentation support the current Plan Template v1 contract without adding out-of-scope systems.")
+        return lines
+    if _has_text(text, r"\bcli\b|\bcommand\b|\bsubcommand\b|\bparser\b|\bargument\b|\bterminal\b|\bbattalion\s+[\"`]"):
+        lines.append("- The primary Battalion invocation starts mission assessment from bare requirement text.")
+        lines.append("- Explicit subcommands continue to route predictably.")
+        lines.append("- Interactive assessment, structured answers, automatic initialization, and Plan generation remain intact.")
+        lines.append("- Regression tests cover routing, interaction, documentation, and collision behavior.")
         return lines
     if constraints.get("functional") and _has_text(text, r"health"):
         lines.append("- The service exposes the specified health endpoint and returns the expected successful response for valid GET requests.")
@@ -1236,6 +1282,53 @@ def ensure_assessed_contract(workspace):
     mission_prompt = mission.get("mission_prompt") or mission.get("original_prompt")
     if not isinstance(mission_prompt, str) or not mission_prompt.strip():
         raise ValueError("Mission prompt is missing or invalid. Reinitialize the mission with a valid prompt.")
+    decision_problem = _human_answer_problem(ledger.get("human_answers", []))
+    if decision_problem:
+        ledger["requirements"] = []
+        ledger["assumptions"] = []
+        ledger["risks"] = [{
+            "id": "RISK-001",
+            "statement": decision_problem["risk"],
+            "traceability": {
+                "source": "human_answers",
+                "prompt_excerpt": mission_prompt,
+                "rationale": decision_problem["rationale"],
+                "constraint_ids": [],
+            },
+        }]
+        ledger["clarifications"] = [{
+            "id": "Q-001",
+            "question": decision_problem["question"],
+            "status": "open",
+            "answer": None,
+            "created_at": timestamp(),
+            "resolved_at": None,
+            "resolved_by": None,
+            "traceability": {
+                "source": "human_answers",
+                "prompt_excerpt": mission_prompt,
+                "rationale": decision_problem["rationale"],
+                "constraint_ids": [],
+            },
+            "history": [{
+                "action": "created",
+                "status": "open",
+                "value": decision_problem["question"],
+                "actor": "mission_analyst",
+                "timestamp": timestamp(),
+            }],
+        }]
+        ledger["planning_status"] = decision_problem["status"]
+        ledger["mission_prompt"] = mission_prompt
+        write_yaml(workspace / "ledger.yaml", ledger)
+        stale_plan = workspace / "mission-plan.md"
+        if stale_plan.exists():
+            stale_plan.unlink()
+        append_event(workspace, "mission_contract_blocked", {
+            "mission_id": mission["id"],
+            "reason": decision_problem["status"],
+        })
+        return
     contract_prompt = _assessment_context_text(mission_prompt, ledger)
     contract = generate_mission_contract(mission["id"], contract_prompt, timestamp())
     contract["mission_prompt"] = mission_prompt
@@ -1259,6 +1352,47 @@ def ensure_assessed_contract(workspace):
             "action": "created",
             "value": clarification["question"],
         }, actor="mission_analyst")
+
+
+def _human_answer_problem(human_answers):
+    if not human_answers:
+        return None
+    if not isinstance(human_answers, list):
+        return {
+            "status": "invalid_human_decisions",
+            "risk": "Human decision data is malformed and cannot support authoritative planning.",
+            "question": "Resolve malformed human decision data before planning.",
+            "rationale": "Human answers must be structured records with identifiers, questions, and answers.",
+        }
+    seen = {}
+    for item in human_answers:
+        if not isinstance(item, dict):
+            return {
+                "status": "invalid_human_decisions",
+                "risk": "Human decision data is malformed and cannot support authoritative planning.",
+                "question": "Resolve malformed human decision data before planning.",
+                "rationale": "Human answers must be structured records with identifiers, questions, and answers.",
+            }
+        identifier = str(item.get("id", "")).strip()
+        question = str(item.get("question", "")).strip()
+        answer = str(item.get("answer", "")).strip()
+        if not identifier or not question or not answer:
+            return {
+                "status": "invalid_human_decisions",
+                "risk": "Human decision data is malformed and cannot support authoritative planning.",
+                "question": "Resolve malformed human decision data before planning.",
+                "rationale": "Each human answer must include id, question, and answer.",
+            }
+        previous = seen.get(identifier)
+        if previous and previous != answer:
+            return {
+                "status": "conflicting_human_decisions",
+                "risk": f"Human decisions for {identifier} conflict and cannot support authoritative planning.",
+                "question": f"Resolve conflicting human decisions for {identifier}.",
+                "rationale": "Explicit human decisions override inferred behavior only when they are internally consistent.",
+            }
+        seen[identifier] = answer
+    return None
 
 
 def resolve_requirement_questions(workspace, args, assessment_result):
