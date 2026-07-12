@@ -429,6 +429,37 @@ battalion review \
 
 Supported decision sources are `pr-approval`, `pr-merge`, and `manual-artifact`. PR approval may satisfy human review evidence, PR merge may satisfy authorization or completion evidence, and manual artifact updates remain an optional fallback for workflows without a PR. Passing tests, implementation completion, and Battalion recommendations are never inferred as human approval.
 
+### `battalion evidence-report`
+
+Generates Evidence Report v1 from Plan Review output.
+
+```bash
+battalion evidence-report
+```
+
+Evidence Report consumes:
+
+```text
+.battalion/plan-review.json
+```
+
+and writes:
+
+```text
+.battalion/evidence-report.md
+.battalion/evidence-report.json
+```
+
+Use `--review` to supply a specific Plan Review JSON file:
+
+```bash
+battalion evidence-report --review .battalion/plan-review.json
+```
+
+Evidence Report is the concise decision-support artifact produced after Plan Review. It summarizes the Plan and Plan Review versions evaluated, verified findings, failed findings, unable-to-verify findings, out-of-scope deviations, advisory Battalion recommendation, observed human decision evidence, and the explicit human-decision boundary.
+
+Evidence Report does not independently re-evaluate implementation evidence, rewrite Plan Review findings, approve, reject, merge, deploy, authorize execution, or gate work. The latest non-superseded Evidence Report is authoritative; Evidence Report v1 records lineage metadata but does not implement an artifact resolver or catalog.
+
 ### `battalion resolve`
 
 Creates a focused implementation correction package from failed Mission Assurance findings.
