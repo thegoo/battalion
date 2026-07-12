@@ -51,6 +51,21 @@ Claims do not complete work. Battalion records acceptance criteria, required evi
 
 Mission Assurance must prefer observable evidence over source-visible intent when runtime evidence is available. Diagnostics may explain likely causes, but they do not override evidence.
 
+## Artifact lifecycle and versioning
+
+Battalion artifacts move through explicit lifecycle states:
+
+- Draft: the artifact is being prepared and is not yet authoritative.
+- Approved: humans have accepted the artifact as authoritative for its role.
+- Completed: the artifact fulfilled its role in the mission lifecycle.
+- Superseded: a newer authoritative version exists.
+
+Completed is a valid terminal state for an artifact that did its job. Archived is not the normal terminal state for completed artifacts; supersession records that a newer version has replaced the prior authoritative version.
+
+Material updates should create new artifact versions rather than overwrite history. In principle, a material update should flow through assessment, plan, implementation, evidence, review, and human decision again.
+
+The latest non-superseded version is the source of truth. Older versions remain part of the traceable historical record so evolution, rationale, evidence, and human decisions are preserved instead of erased.
+
 ## Determinism
 
 Battalion artifacts should be reproducible, source-controlled, human-readable, and truthful to their declared serialization format.

@@ -27,7 +27,7 @@ The governing product sequence is:
 6. Skill Layer.
 7. Integrations.
 
-The immediate authorized slice is Plan Template v1 / Dogfooded Plan Artifact. Artifact catalog strategy follows after the Plan artifact is stable enough for Battalion to use on its own work.
+The immediate product focus is strengthening the artifact pipeline around Plans, reviews, evidence, and human decisions. Artifact catalog strategy follows after the core artifacts are stable enough for Battalion to use on its own work.
 
 ## Near-term objectives
 
@@ -48,3 +48,5 @@ The immediate authorized slice is Plan Template v1 / Dogfooded Plan Artifact. Ar
 ## Versioning posture
 
 Battalion remains pre-v1. Minor versions may refine workflow contracts, artifact structure, and terminology. A future `1.0.0` release should mark a stable public workflow and artifact contract.
+
+Battalion doctrine treats material artifact changes as versioned history. The latest non-superseded artifact version is authoritative; older versions remain traceable records of prior rationale, evidence, and human decisions.
