@@ -201,6 +201,10 @@ def _is_plan_template_mission(prompt: str) -> bool:
     return _matches(prompt, r"\bplan template\b") and _matches(prompt, r"\bmission-plan\.md\b")
 
 
+def _is_readme_mission(prompt: str) -> bool:
+    return _matches(prompt, r"\breadme(?:\.md)?\b")
+
+
 def _generate_plan_template_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
     constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
     constraints["functional"] = [
@@ -330,10 +334,100 @@ def _generate_plan_template_contract(mission_id: str, prompt: str) -> Dict[str, 
     }
 
 
+def _generate_readme_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
+    constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
+    constraints["functional"] = [
+        {
+            "id": "FC-001",
+            "statement": "README.md must satisfy the clarified documentation intent.",
+            "prompt_excerpt": _excerpt(prompt, (r"README", r"overview", r"setup", r"install")),
+        },
+        {
+            "id": "FC-002",
+            "statement": "README.md must be written for the clarified audience.",
+            "prompt_excerpt": _excerpt(prompt, (r"external", r"internal", r"contributor", r"user", r"operator")),
+        },
+    ]
+    constraints["testing"] = [{
+        "id": "TEST-001",
+        "statement": "Documentation validation must confirm the requested README content exists.",
+        "prompt_excerpt": _excerpt(prompt, (r"README", r"overview", r"setup", r"install")),
+    }]
+    lower = prompt.lower()
+    depth = "blank" if "blank" in lower else "detailed" if "detailed" in lower else "lightweight" if "lightweight" in lower else "appropriate"
+    audience = "external contributors" if _matches(prompt, r"\bexternal\b") and _matches(prompt, r"\bcontributor") else "the clarified audience"
+    content_acceptance = ["README.md exists"]
+    if _matches(prompt, r"\boverview\b"):
+        content_acceptance.append("README.md provides a project overview")
+    if _matches(prompt, r"\bsetup\b|\binstall(?:ation)?\b"):
+        content_acceptance.append("README.md includes setup or installation instructions")
+    if depth == "lightweight":
+        content_acceptance.append("README.md remains lightweight while still useful")
+    elif depth == "blank":
+        content_acceptance.append("README.md is intentionally blank or minimal for repository initialization")
+    elif depth == "detailed":
+        content_acceptance.append("README.md includes detailed project documentation")
+    requirements = [
+        _requirement(
+            "R-001",
+            "Create contributor-facing README documentation" if "contributor" in audience else "Create README documentation",
+            content_acceptance,
+            [_review("ux", "Review README clarity and audience fit.")],
+            "developer",
+            _trace(_source(constraints["functional"], prompt), "The mission requires README documentation with clarified content depth and intent.", ["FC-001"]),
+        ),
+        _requirement(
+            "R-002",
+            "Align README content to the intended audience",
+            [
+                f"README.md is understandable for {audience}",
+                "README.md avoids unrelated application, API, data, UI, infrastructure, or integration scope",
+            ],
+            [_review("ux", "Validate that the README matches the intended reader and does not broaden scope.")],
+            "developer",
+            _trace(_source([constraints["functional"][1]], prompt), "The human answer identifies who the README is for.", ["FC-002"]),
+        ),
+        _requirement(
+            "R-003",
+            "Validate README content",
+            [
+                "Deterministic validation confirms README.md exists",
+                "Validation confirms requested overview and setup content when applicable",
+                "Validation fails if README.md introduces unsupported application, API, data, UI, infrastructure, or integration scope",
+            ],
+            [_review("tester", "Confirm README validation evidence is reproducible.")],
+            "tester",
+            _trace(_source(constraints["testing"], prompt), "The slice requires evidence that the documentation satisfies the clarified request.", ["TEST-001"]),
+        ),
+    ]
+    assumptions = [{
+        "id": "A-001",
+        "statement": "No application code changes are required for this README-only mission.",
+        "traceability": _trace(_source(constraints["functional"], prompt), "README work is documentation-focused unless the mission explicitly expands scope.", ["FC-001"]),
+    }]
+    risks = [{
+        "id": "RISK-001",
+        "statement": "The README may omit project-specific details that are not present in the repository or clarified answers.",
+        "traceability": _trace(prompt, "Documentation quality depends on available repository context and human-provided intent.", []),
+    }]
+    return {
+        "mission_id": mission_id,
+        "mission_prompt": prompt,
+        "generated_by": "mission_analyst",
+        "requirements": requirements,
+        "constraints": constraints,
+        "assumptions": assumptions,
+        "risks": risks,
+        "clarifications": [],
+    }
+
+
 def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
     """Convert an immutable mission prompt into a traceable initial contract."""
     if _is_plan_template_mission(prompt):
         return _generate_plan_template_contract(mission_id, prompt)
+    if _is_readme_mission(prompt):
+        return _generate_readme_contract(mission_id, prompt)
 
     constraints = extract_constraints(prompt)
     requirements = []

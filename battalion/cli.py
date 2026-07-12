@@ -23,7 +23,7 @@ NO_MISSION_MESSAGE = """Current directory does not contain a Battalion mission.
 
 Run:
 
-  battalion assess --requirement "Describe the mission"
+  battalion assess "Describe the mission"
 
 or navigate to a directory containing .battalion"""
 
@@ -86,8 +86,11 @@ def read_requirement_input(value: str, cwd: Path) -> str:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = cwd / candidate
-    if candidate.is_file():
-        return candidate.read_text(encoding="utf-8").strip()
+    try:
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8").strip()
+    except OSError:
+        return value.strip()
     return value.strip()
 
 
@@ -97,7 +100,10 @@ def requirement_input_path(value: str, cwd: Path):
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = cwd / candidate
-    return str(candidate) if candidate.is_file() else None
+    try:
+        return str(candidate) if candidate.is_file() else None
+    except OSError:
+        return None
 
 
 def _requirement_title(requirement: str) -> str:
@@ -115,22 +121,7 @@ def plan(args, cwd):
     statement = args.requirement
     ledger = read_yaml(workspace / "ledger.yaml")
     if not statement:
-        assessment_path = workspace / "assessment.json"
-        if not assessment_path.is_file():
-            raise SystemExit("No mission assessment exists. Run battalion assess first.")
-        assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
-        readiness = assessment.get("readiness")
-        if readiness not in {"READY", "READY_WITH_RISK"}:
-            raise SystemExit(f"Mission planning requires assessment readiness READY or READY_WITH_RISK. Current readiness: {readiness or 'UNKNOWN'}.")
-        content = render_mission_plan(read_yaml(workspace / "mission.yaml"), ledger, assessment, args.architecture or [])
-        target = workspace / "mission-plan.md"
-        target.write_text(content, encoding="utf-8")
-        append_event(workspace, "mission_plan_created", {
-            "path": str(target.relative_to(workspace.parent)),
-            "assessment_schema_version": assessment.get("schema_version"),
-            "readiness": assessment.get("readiness"),
-            "architecture_references": args.architecture or [],
-        })
+        target = generate_authoritative_plan(workspace, args.architecture or [])
         print(f"Generated execution-ready mission plan at {target}")
         return
     req_id = f"R-{len(ledger['requirements']) + 1:03d}"
@@ -150,6 +141,26 @@ def plan(args, cwd):
     append_event(workspace, "requirement_added", {"requirement_id": req_id})
     append_event(workspace, "plan_created", {"requirement_count": len(ledger["requirements"])})
     print(f"Added {req_id}: {statement}")
+
+
+def generate_authoritative_plan(workspace, architecture_references=None):
+    assessment_path = workspace / "assessment.json"
+    if not assessment_path.is_file():
+        raise SystemExit("No mission assessment exists. Run battalion assess first.")
+    assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
+    readiness = assessment.get("readiness")
+    if readiness not in {"READY", "READY_WITH_RISK"}:
+        raise SystemExit(f"Mission planning requires assessment readiness READY or READY_WITH_RISK. Current readiness: {readiness or 'UNKNOWN'}.")
+    content = render_mission_plan(read_yaml(workspace / "mission.yaml"), read_yaml(workspace / "ledger.yaml"), assessment, architecture_references or [])
+    target = workspace / "mission-plan.md"
+    target.write_text(content, encoding="utf-8")
+    append_event(workspace, "mission_plan_created", {
+        "path": str(target.relative_to(workspace.parent)),
+        "assessment_schema_version": assessment.get("schema_version"),
+        "readiness": assessment.get("readiness"),
+        "architecture_references": architecture_references or [],
+    })
+    return target
 
 
 def render_mission_plan(mission, ledger, assessment, architecture_references=None):
@@ -1060,36 +1071,37 @@ def status(args, cwd):
 
 
 def assessment(args, cwd):
+    args.question_budget = 5
+    requirement_value = args.requirement_text or args.requirement
     requirement_path = None
-    if args.requirement:
-        requirement_path = requirement_input_path(args.requirement, cwd)
-        requirement = read_requirement_input(args.requirement, cwd)
+    workspace = root(cwd)
+    if requirement_value:
+        requirement_path = requirement_input_path(requirement_value, cwd)
+        requirement = read_requirement_input(requirement_value, cwd)
         if not requirement:
             raise SystemExit("Requirement cannot be empty.")
-        workspace = root(cwd)
-        if not workspace.exists():
-            workspace = initialize_mission_workspace(cwd, requirement, title="Requirement Assessment", objective=requirement)
-        else:
-            ledger = read_yaml(workspace / "ledger.yaml")
-            mission = read_yaml(workspace / "mission.yaml")
-            mission["title"] = _requirement_title(requirement)
-            mission["objective"] = requirement
-            mission["mission_prompt"] = requirement
-            mission["original_prompt"] = requirement
-            write_yaml(workspace / "mission.yaml", mission)
-            ledger = {"mission_id": mission.get("id", "M-001"), "mission_prompt": requirement, "requirements": [], "assumptions": [], "risks": []}
-            write_yaml(workspace / "ledger.yaml", ledger)
-            append_event(workspace, "assessment_requirement_updated", {"mission_id": mission.get("id", "M-001")})
-    else:
-        workspace = workspace_or_exit(cwd)
+        workspace = set_assessment_requirement(cwd, requirement)
+    elif not workspace.exists():
+        if not sys.stdin.isatty():
+            raise SystemExit("Provide a requirement, for example: battalion assess \"Create a README\"")
+        print("What would you like Battalion to assess?")
+        requirement = prompt_user("> ").strip()
+        if not requirement:
+            raise SystemExit("Requirement cannot be empty.")
+        workspace = set_assessment_requirement(cwd, requirement)
     try:
         ensure_assessed_contract(workspace)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     try:
         result = write_assessment(workspace)
-        if args.interactive:
-            if resolve_assessment_clarifications(workspace, args, result):
+        if resolve_requirement_questions(workspace, args, result):
+            ensure_assessed_contract(workspace)
+            result = write_assessment(workspace)
+        if resolve_assessment_clarifications(workspace, args, result):
+            result = write_assessment(workspace)
+            if resolve_requirement_questions(workspace, args, result):
+                ensure_assessed_contract(workspace)
                 result = write_assessment(workspace)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -1098,6 +1110,28 @@ def assessment(args, cwd):
     print("\nArtifacts")
     print(f"- Mission Context: {artifacts['mission_context'].relative_to(cwd)}")
     print(f"- Assessment Report: {artifacts['assessment_md'].relative_to(cwd)}")
+    if result.get("readiness") in {"READY", "READY_WITH_RISK"}:
+        plan_path = generate_authoritative_plan(workspace)
+        print(f"- Authoritative Plan: {plan_path.relative_to(cwd)}")
+
+
+def set_assessment_requirement(cwd: Path, requirement: str):
+    workspace = root(cwd)
+    if not workspace.exists():
+        return initialize_mission_workspace(cwd, requirement, title=_requirement_title(requirement), objective=requirement)
+    mission = read_yaml(workspace / "mission.yaml")
+    mission["title"] = _requirement_title(requirement)
+    mission["objective"] = requirement
+    mission["mission_prompt"] = requirement
+    mission["original_prompt"] = requirement
+    write_yaml(workspace / "mission.yaml", mission)
+    write_yaml(workspace / "ledger.yaml", {"mission_id": mission.get("id", "M-001"), "mission_prompt": requirement, "requirements": [], "assumptions": [], "risks": []})
+    append_event(workspace, "assessment_requirement_updated", {"mission_id": mission.get("id", "M-001")})
+    for stale_artifact in ("assessment.json", "assessment.md", "mission-plan.md"):
+        target = workspace / stale_artifact
+        if target.exists():
+            target.unlink()
+    return workspace
 
 
 def print_assessment_summary(result):
@@ -1202,7 +1236,11 @@ def ensure_assessed_contract(workspace):
     mission_prompt = mission.get("mission_prompt") or mission.get("original_prompt")
     if not isinstance(mission_prompt, str) or not mission_prompt.strip():
         raise ValueError("Mission prompt is missing or invalid. Reinitialize the mission with a valid prompt.")
-    contract = generate_mission_contract(mission["id"], mission_prompt, timestamp())
+    contract_prompt = _assessment_context_text(mission_prompt, ledger)
+    contract = generate_mission_contract(mission["id"], contract_prompt, timestamp())
+    contract["mission_prompt"] = mission_prompt
+    contract["human_answers"] = ledger.get("human_answers", [])
+    _normalize_trace_excerpts(contract, mission_prompt)
     contract["mission_attributes"] = infer_attributes(mission, contract)
     write_yaml(workspace / "ledger.yaml", contract)
     append_event(workspace, "mission_contract_generated", {
@@ -1223,6 +1261,118 @@ def ensure_assessed_contract(workspace):
         }, actor="mission_analyst")
 
 
+def resolve_requirement_questions(workspace, args, assessment_result):
+    requirement_assessment = assessment_result.get("requirement_assessment", {})
+    questions = requirement_assessment.get("questions", [])
+    if not questions:
+        return False
+    if not sys.stdin.isatty():
+        return False
+    budget = max(0, getattr(args, "question_budget", 5))
+    if budget == 0:
+        return False
+    question_details = requirement_assessment.get("question_details", [])
+    selected = []
+    for index, question in enumerate(questions[:budget]):
+        detail = question_details[index] if index < len(question_details) else {}
+        selected.append({
+            "id": detail.get("id") or f"assessment.{index + 1}",
+            "question": detail.get("question") or _question_without_examples(question),
+            "display": question,
+        })
+    args.question_budget = budget - len(selected)
+    print(f"\nAssessment needs {len(selected)} human answer(s) before it can produce the authoritative Plan.")
+    answers = []
+    for index, item in enumerate(selected, start=1):
+        print(f"\nQuestion {index} of {len(selected)}")
+        print(_clean_question_text(item["display"]))
+        answer = prompt_user("> ").strip()
+        if answer:
+            answers.append({**item, "answer": answer})
+    if not answers:
+        print("\nNo answers provided; assessment remains incomplete.")
+        return False
+    mission = read_yaml(workspace / "mission.yaml")
+    ledger = read_yaml(workspace / "ledger.yaml")
+    ledger["human_answers"] = _merge_human_answers(ledger.get("human_answers", []), answers, args.resolver or "human")
+    ledger["requirements"] = []
+    ledger["assumptions"] = []
+    ledger["risks"] = []
+    ledger["clarifications"] = []
+    ledger["mission_prompt"] = mission.get("original_prompt") or mission.get("mission_prompt") or ledger.get("mission_prompt", "")
+    write_yaml(workspace / "ledger.yaml", ledger)
+    append_event(workspace, "assessment_questions_answered", {
+        "mission_id": mission.get("id", "M-001"),
+        "answered_count": len(answers),
+        "question_count": len(selected),
+        "answer_ids": [item["id"] for item in answers],
+    }, actor=args.resolver or "human")
+    print(f"\nCaptured {len(answers)} answer(s). Re-running assessment.")
+    return True
+
+
+def _clean_question_text(question):
+    text = str(question)
+    return text.replace(" Examples: ", "\nExamples: ")
+
+
+def _question_without_examples(question):
+    text = str(question)
+    return text.split(" Examples: ", 1)[0].strip()
+
+
+def _merge_human_answers(existing, answers, resolver):
+    ordered = [
+        item
+        for item in existing
+        if isinstance(item, dict) and item.get("id")
+    ] if isinstance(existing, list) else []
+    by_id = {item["id"]: item for item in ordered}
+    for item in answers:
+        record = {
+            "id": item["id"],
+            "question": item["question"],
+            "answer": item["answer"],
+            "status": "resolved",
+            "answered_by": resolver,
+            "answered_at": timestamp(),
+        }
+        if item["id"] not in by_id:
+            ordered.append(record)
+        else:
+            ordered = [record if existing_item.get("id") == item["id"] else existing_item for existing_item in ordered]
+        by_id[item["id"]] = record
+    return ordered
+
+
+def _assessment_context_text(mission_prompt, ledger):
+    answers = [
+        item.get("answer", "").strip()
+        for item in ledger.get("human_answers", [])
+        if isinstance(item, dict) and item.get("answer")
+    ]
+    if not answers:
+        return mission_prompt
+    return "\n".join([mission_prompt, "", "Human answer context:", *[f"- {answer}" for answer in answers]])
+
+
+def _normalize_trace_excerpts(contract, mission_prompt):
+    def visit(value):
+        if isinstance(value, dict):
+            trace = value.get("traceability")
+            if isinstance(trace, dict):
+                excerpt = trace.get("prompt_excerpt")
+                if isinstance(excerpt, str) and excerpt and excerpt not in mission_prompt:
+                    trace["prompt_excerpt"] = mission_prompt
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(contract)
+
+
 def resolve_assessment_clarifications(workspace, args, assessment_result):
     ledger = read_yaml(workspace / "ledger.yaml")
     clarifications = ledger.get("clarifications", [])
@@ -1232,20 +1382,26 @@ def resolve_assessment_clarifications(workspace, args, assessment_result):
     if not open_items:
         return False
     if not sys.stdin.isatty():
-        raise SystemExit("Interactive assessment requires a terminal. Run battalion clarify or use --answer with battalion clarify.")
-    print_assessment_summary(assessment_result)
-    print("\nInteractive assessment clarification resolution")
-    print_open_clarifications(open_items)
-    actions = collect_clarification_actions(open_items)
-    if not actions:
-        print("\nNo clarification answers provided; readiness will remain NOT_READY.")
         return False
-    resolver = args.resolver or prompt_user("\nResolved by: ").strip()
-    if not resolver:
-        raise SystemExit("Provide --resolver for clarification actions.")
+    budget = max(0, getattr(args, "question_budget", 5))
+    if budget == 0:
+        return False
+    selected = open_items[:budget]
+    args.question_budget = budget - len(selected)
+    print(f"\nAssessment needs {len(selected)} human answer(s) before it can produce the authoritative Plan.")
+    actions = []
+    for index, item in enumerate(selected, start=1):
+        print(f"\nQuestion {index} of {len(selected)}")
+        print(item.get("question", "Provide the missing decision."))
+        answer = prompt_user("> ").strip()
+        if answer:
+            actions.append((item["id"], "resolved", answer))
+    if not actions:
+        print("\nNo answers provided; assessment remains incomplete.")
+        return False
+    resolver = args.resolver or "human"
     apply_clarification_actions(workspace, ledger, actions, resolver)
-    print(f"\nResolved {len(actions)} clarification(s) during assessment.")
-    print("Re-running assessment after clarification updates.\n")
+    print(f"\nCaptured {len(actions)} answer(s). Re-running assessment.")
     return True
 
 
@@ -1432,18 +1588,12 @@ def evidence_report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
+    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, review, evidence, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
-    p = commands.add_parser("init"); p.add_argument("--title"); p.add_argument("--objective"); p.add_argument("--prompt")
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
     p.add_argument("--acceptance", action="append", help="Acceptance criterion; repeat for multiple criteria")
     p.add_argument("--review", action="append", help="Required standing-team reviewer id; repeat for multiple reviews")
     p.add_argument("--architecture", action="append", help="Architecture reference filename to record in the mission plan; repeat for multiple references")
-    p = commands.add_parser("clarify")
-    p.add_argument("--resolver", help="Human responsible for the clarification decision")
-    p.add_argument("--answer", action="append", metavar="Q-ID=VALUE", help="Resolve a clarification; repeat as needed")
-    p.add_argument("--reject", action="append", metavar="Q-ID=REASON", help="Reject a clarification; repeat as needed")
-    p.add_argument("--supersede", action="append", metavar="Q-ID=VALUE", help="Supersede a clarification; repeat as needed")
     p = commands.add_parser("dispatch")
     p.add_argument("--executor", help=f"Dispatch .battalion/mission-plan.md to a supported executor: {', '.join(sorted(SUPPORTED_EXECUTORS))}")
     p.add_argument("--mode", choices=["auto", "standard"], default="standard", help="Executor invocation mode; auto permits routine local implementation work but never source control or deployment actions")
@@ -1459,9 +1609,9 @@ def parser():
     p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
     commands.add_parser("status")
     p = commands.add_parser("assess")
-    p.add_argument("--requirement", help="Requirement text or path to a requirement file to assess")
-    p.add_argument("--interactive", action="store_true", help="Prompt for outstanding clarification answers during assessment")
-    p.add_argument("--resolver", help="Human responsible for clarification answers collected during assessment")
+    p.add_argument("requirement_text", nargs="?", help="Requirement text or path to a requirement file to assess")
+    p.add_argument("--requirement", help=argparse.SUPPRESS)
+    p.add_argument("--resolver", help=argparse.SUPPRESS)
     p = commands.add_parser("assure")
     p.add_argument("--run", action="store_true", help="Run deterministic local runtime validation in addition to static assurance")
     p.add_argument("--verbose", action="store_true", help="Show full assurance evidence in CLI output")
@@ -1489,9 +1639,7 @@ def parser():
 def main(argv=None, cwd=None):
     args = parser().parse_args(argv); cwd = Path.cwd() if cwd is None else Path(cwd)
     {
-        "init": init,
         "plan": plan,
-        "clarify": clarify,
         "dispatch": dispatch,
         "execute": execute,
         "status": status,

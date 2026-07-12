@@ -1063,9 +1063,8 @@ def _mission_summary(mission: Dict[str, Any], ledger: Dict[str, Any], attributes
 def assess(workspace: Path) -> Dict[str, Any]:
     mission = read_yaml(workspace / "mission.yaml")
     ledger = read_yaml(workspace / "ledger.yaml")
-    requirement_assessment = assess_requirement_text(
-        mission.get("mission_prompt") or mission.get("original_prompt") or ledger.get("mission_prompt") or ""
-    )
+    requirement_text = _requirement_text_with_human_answers(mission, ledger)
+    requirement_assessment = assess_requirement_text(requirement_text)
     classification = classify_mission(mission, ledger, _attribute_catalog(workspace))
     attribute_sources = _attribute_sources_from_classification(classification)
     attributes = sorted(classification["detected_attributes"])
@@ -1111,6 +1110,7 @@ def assess(workspace: Path) -> Dict[str, Any]:
         ],
         "assumptions": ledger.get("assumptions", []) if isinstance(ledger.get("assumptions"), list) else [],
         "resolved_assumptions": _resolved_assumptions(ledger),
+        "human_answers": ledger.get("human_answers", []) if isinstance(ledger.get("human_answers"), list) else [],
         "risks": categorized_risks["open"],
         "resolved_risks": categorized_risks["resolved"],
         "engineering_obligation_summary": {
@@ -1129,6 +1129,18 @@ def assess(workspace: Path) -> Dict[str, Any]:
             "Satisfied obligations without assumptions or risks produce READY.",
         ],
     }
+
+
+def _requirement_text_with_human_answers(mission: Dict[str, Any], ledger: Dict[str, Any]) -> str:
+    prompt = mission.get("mission_prompt") or mission.get("original_prompt") or ledger.get("mission_prompt") or ""
+    answers = [
+        str(item.get("answer", "")).strip()
+        for item in ledger.get("human_answers", [])
+        if isinstance(item, dict) and item.get("answer")
+    ]
+    if not answers:
+        return prompt
+    return "\n".join([prompt, "", "Human answer context:", *[f"- {answer}" for answer in answers]])
 
 
 def render_assessment_markdown(assessment: Dict[str, Any]) -> str:
