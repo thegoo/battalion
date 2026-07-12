@@ -87,6 +87,10 @@ class MissionCorpus:
             if not isinstance(clarification, dict) or clarification.get("status") not in {"resolved", "superseded", "rejected"}:
                 continue
             _add_source(sources, "clarification_answer", clarification.get("answer"))
+        for answer in ledger.get("human_answers", []) if isinstance(ledger.get("human_answers"), list) else []:
+            if not isinstance(answer, dict) or answer.get("status") not in {"resolved", "superseded"}:
+                continue
+            _add_source(sources, "human_answer", answer.get("answer"))
         return cls(sources)
 
 

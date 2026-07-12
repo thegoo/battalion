@@ -55,16 +55,13 @@ Before v1, users should read the changelog before upgrading between minor versio
 The primary workflow is:
 
 ```bash
-battalion assess --requirement "Describe the mission"
-battalion clarify
-battalion assess
-battalion plan
+battalion assess "Describe the mission"
 battalion dispatch --executor codex
 battalion assure
 battalion report
 ```
 
-Use `battalion clarify` only when assessment reports open clarifications. Use `battalion assure` after implementation evidence and reviews exist.
+`battalion assess` initializes mission state when needed, asks any required human questions in the same run, writes assessment artifacts, and generates the authoritative Plan. Use `battalion assure` after implementation evidence and reviews exist.
 
 ## Repository structure
 
@@ -124,25 +121,31 @@ Multiline YAML values, such as mission requirements, are written as readable blo
 
 ### `battalion assess`
 
-Evaluates whether Battalion understands the mission well enough to create a reliable execution plan.
+Evaluates whether Battalion understands the mission well enough to create a reliable execution plan, then generates the authoritative Plan when assessment is complete.
+
+```bash
+battalion assess "Create an API endpoint to retrieve customer email."
+```
+
+If no requirement is provided and no mission exists yet, Battalion prompts once for the requirement:
 
 ```bash
 battalion assess
 ```
 
-You can also assess a requirement directly, either inline or from a file:
+You can also assess a requirement from a file:
 
 ```bash
-battalion assess --requirement "Create an API endpoint to retrieve customer email."
-battalion assess --requirement ./story.md
+battalion assess ./story.md
 ```
 
-For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, `assess --requirement` initializes one from the supplied requirement and then writes assessment artifacts.
+For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, `assess` initializes one from the supplied requirement and then writes assessment artifacts.
 
 Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces internal artifacts for later Battalion phases:
 
 - `.battalion/assessment.json`
 - `.battalion/assessment.md`
+- `.battalion/mission-plan.md`
 
 The CLI output is intentionally limited to mission assessment:
 
@@ -152,7 +155,7 @@ The CLI output is intentionally limited to mission assessment:
 - assumptions;
 - blocking ambiguity;
 - minimal playbook questions;
-- recommendation to proceed to planning or clarify before planning.
+- recommendation to proceed to planning.
 
 Assessment does not report implementation readiness, engineering obligations, mission assurance, deployment posture, runtime selection, framework selection, or approval to implement. Those belong to planning and assurance.
 
@@ -173,39 +176,17 @@ Assessment is driven by packaged mission playbooks. The MVP playbooks cover:
 
 If multiple playbooks match equally, Assessment asks one concise mission-type clarification before planning.
 
-Use interactive assessment only when you explicitly want assessment to collect clarification answers:
+When questions are required and the terminal is interactive, `assess` asks them immediately with simple ordinal numbering:
 
-```bash
-battalion assess --interactive
+```text
+Assessment needs 3 human answer(s) before it can produce the authoritative Plan.
+
+Question 1 of 3
+Which endpoint path should be implemented?
+> /health
 ```
 
-### `battalion clarify`
-
-Collects answers for open clarification questions.
-
-```bash
-battalion clarify
-```
-
-The interactive workflow lets you answer all, answer one, skip, or exit. Previously resolved clarifications are not shown.
-
-Non-interactive resolution is also supported:
-
-```bash
-battalion clarify --resolver "Jesse Williams" \
-  --answer "Q-001=/health" \
-  --answer "Q-002=Fastify" \
-  --answer "Q-003=ISO-8601 UTC"
-```
-
-Other terminal decisions:
-
-```bash
-battalion clarify --resolver "Jesse Williams" --reject "Q-002=Framework decision deferred"
-battalion clarify --resolver "Jesse Williams" --supersede "Q-001=/status"
-```
-
-Clarification decisions are persisted in the mission contract and audit trail. Contract reconciliation updates affected requirements without changing stable requirement IDs.
+Battalion may keep internal question IDs for traceability, but the human-facing first-run flow does not require Q-ID input. Assessment asks at most five questions in one run. If no questions are needed, it generates the Plan without prompting.
 
 ### `battalion plan`
 
@@ -214,6 +195,8 @@ Creates the execution-ready engineering specification.
 ```bash
 battalion plan
 ```
+
+The normal first-run path is `battalion assess "Describe the mission"`, which generates the Plan automatically. Use `battalion plan` only to regenerate the Plan from an existing assessed mission or to record manual requirements in legacy/internal workflows.
 
 Planning currently consumes assessment readiness values of `READY` or `READY_WITH_RISK` as deterministic assessment signals before rendering a Plan. The generated Plan does not include readiness classifications or proceed/no-proceed language. It writes:
 
@@ -654,7 +637,7 @@ Avoid globally installed `pytest` executables that use a different Python enviro
 
 ### Command cannot find a mission
 
-Run `battalion assess --requirement "Describe the mission"` in the current directory or navigate to a directory containing `.battalion`.
+Run `battalion assess "Describe the mission"` in the current directory or navigate to a directory containing `.battalion`.
 
 ### Planning says the mission is not ready
 
@@ -662,11 +645,9 @@ Run:
 
 ```bash
 battalion assess
-battalion clarify
-battalion assess
 ```
 
-Planning currently requires readiness `READY` or `READY_WITH_RISK` as assessment signals. Humans still decide whether to proceed.
+Answer the questions Assessment asks. Planning currently requires readiness `READY` or `READY_WITH_RISK` as assessment signals. Humans still decide whether to proceed.
 
 ## Changelog
 
