@@ -732,7 +732,9 @@ def _evidence_required(requirements, constraints):
         lines.append("- Operational validation evidence for applicable runtime expectations.")
     if any("docker" in item.get("statement", "").lower() or "container" in item.get("statement", "").lower() for item in constraints.get("technical", []) + constraints.get("operational", []) if isinstance(item, dict)):
         lines.append("- Container build and run evidence.")
-    lines.append("- Human decision record for any accepted risk, deferral, rejection, or final approval.")
+    lines.append("- Human decision evidence for any accepted risk, deferral, rejection, or final approval.")
+    lines.append("- PR approval or PR merge may satisfy human decision evidence when observed; manual artifact updates are an optional fallback for workflows without a PR.")
+    lines.append("- Passing tests, implementation completion, and Battalion recommendations must not be inferred as human approval.")
     return lines
 
 
@@ -741,6 +743,11 @@ def _human_decision_lines(mission, requirements, resolved_clarifications):
     lines = [
         "- Humans decide whether to proceed, accept risk, defer, reject, or approve the work.",
         "- Battalion recommendations are advisory signals, not approvals.",
+        "- Human decisions must have deterministic evidence, but manual Plan or evidence edits are not the default completion mechanism.",
+        "- PR approval may satisfy human review evidence when observed.",
+        "- PR merge may satisfy authorization or completion evidence when observed.",
+        "- Manual artifact updates remain an optional fallback for workflows without a PR.",
+        "- Passing tests, implementation completion, and Battalion recommendations must never be inferred as human approval.",
     ]
     if _has_text(text, r"\bplan template\b|\bmission-plan\.md\b"):
         lines.extend([
@@ -759,7 +766,7 @@ def _definition_complete_lines(requirements):
     lines = [
         "- Every traceable requirement has implementation evidence or an explicit human disposition.",
         "- Every acceptance criterion has deterministic validation evidence or an explicit unable-to-verify finding.",
-        "- Human decisions listed in this Plan are completed, rejected, superseded, deferred, or accepted with risk by humans.",
+        "- Human decisions listed in this Plan have deterministic evidence from PR approval, PR merge, or an explicit manual fallback record.",
         "- The final human decision is recorded outside Battalion recommendations.",
     ]
     if not requirements:
@@ -1357,7 +1364,12 @@ def review(args, cwd):
     workspace = workspace_or_exit(cwd)
     plan_path = Path(args.plan) if args.plan else None
     try:
-        result, _ = write_plan_review(workspace, plan_path=plan_path, evidence_paths=args.evidence or [])
+        result, _ = write_plan_review(
+            workspace,
+            plan_path=plan_path,
+            evidence_paths=args.evidence or [],
+            decision_evidence=args.decision_evidence or [],
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     append_event(workspace, "plan_review_completed", {
@@ -1367,6 +1379,7 @@ def review(args, cwd):
         "matches": len(result["matches"]),
         "does_not_match": len(result["does_not_match"]),
         "could_not_verify": len(result["could_not_verify"]),
+        "human_decision_evidence": result["human_decision_evidence"],
     })
     print("Plan Review")
     print(f"- Plan: {result['plan']}")
@@ -1375,6 +1388,10 @@ def review(args, cwd):
     print(f"- Matches: {len(result['matches'])}")
     print(f"- Does not match: {len(result['does_not_match'])}")
     print(f"- Could not verify: {len(result['could_not_verify'])}")
+    print("- Human decision evidence:")
+    for item in result["human_decision_evidence"]:
+        reference = f" ({item['reference']})" if item.get("reference") else ""
+        print(f"  - {item['label']}: {item['status']}{reference}")
     print("Artifacts:")
     print(f"- {workspace / 'plan-review.md'}")
     print(f"- {workspace / 'plan-review.json'}")
@@ -1420,6 +1437,15 @@ def parser():
     p = commands.add_parser("review")
     p.add_argument("--plan", help="Authoritative Plan path. Defaults to .battalion/mission-plan.md.")
     p.add_argument("--evidence", action="append", help="Evidence file to compare against the Plan; repeat for multiple files.")
+    p.add_argument(
+        "--decision-evidence",
+        action="append",
+        help=(
+            "Observed human decision evidence as source=status[:reference]. "
+            "Sources: pr-approval, pr-merge, manual-artifact. "
+            "Manual artifact updates are optional fallback evidence, not the default PR workflow."
+        ),
+    )
     commands.add_parser("report")
     return result
 

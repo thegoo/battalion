@@ -418,6 +418,17 @@ Plan Review answers only:
 
 Plan Review reports factual findings and advisory recommendations for human decision-making. It does not approve, reject, merge, deploy, authorize execution, gate work, implement Evidence Report v1, select executors, or modify the authoritative Plan.
 
+Human decisions remain explicit, but humans do not need to manually edit Plan or review artifacts when a pull request already provides deterministic decision evidence. `battalion review` can record observed decision sources:
+
+```bash
+battalion review \
+  --evidence evidence/tests.txt \
+  --decision-evidence "pr-approval=observed:PR #28 approved" \
+  --decision-evidence "pr-merge=executed:PR #28 merged"
+```
+
+Supported decision sources are `pr-approval`, `pr-merge`, and `manual-artifact`. PR approval may satisfy human review evidence, PR merge may satisfy authorization or completion evidence, and manual artifact updates remain an optional fallback for workflows without a PR. Passing tests, implementation completion, and Battalion recommendations are never inferred as human approval.
+
 ### `battalion resolve`
 
 Creates a focused implementation correction package from failed Mission Assurance findings.
