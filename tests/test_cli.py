@@ -2144,6 +2144,200 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(len(assessment["requirement_assessment"]["questions"]), 1)
         self.assertIn("Which mission type applies: api.endpoint, documentation.readme?", output)
 
+    def test_cli_ux_mission_generates_command_routing_plan_not_generic_application_plan(self):
+        mission = (
+            "For the best user experience, a user should not have to know or enter an assessment command.\n\n"
+            "The primary interface should simply be:\n\n"
+            "battalion \"My requirement.\"\n\n"
+            "Battalion should automatically initialize if necessary, assess the mission, interactively gather any required human answers "
+            "(up to the configured maximum), and generate the authoritative Plan in the same flow.\n\n"
+            "Preserve all existing doctrine and behavior:\n"
+            "- Battalion owns the WHAT.\n"
+            "- Humans own answers and decisions.\n"
+            "- Plans remain authoritative.\n"
+            "- Evidence over assertion.\n"
+            "- Battalion remains boring.\n\n"
+            "The goal of this slice is to make the default user experience intent-first while preserving all existing assessment, "
+            "planning, review, and evidence behavior."
+        )
+        output = self.run_cli("assess", "--requirement", mission)
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        ledger = read_yaml(self.ledger_path)
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+
+        self.assertIn("Mission Type\nCLI / Workflow", output)
+        self.assertEqual(assessment["assessment_outcome"], "PROCEED_WITH_ASSUMPTIONS")
+        self.assertEqual(assessment["requirement_assessment"]["mission_type"]["key"], "cli.workflow")
+        self.assertIn("cli", assessment["requirement_assessment"]["detected_domains"])
+        self.assertIn("CLI", ledger["mission_attributes"])
+        requirement_statements = [item["statement"] for item in ledger["requirements"]]
+        self.assertIn("Handle bare requirement routing to assessment", requirement_statements)
+        self.assertIn("Preserve explicit subcommands and command-name collision behavior", requirement_statements)
+        self.assertIn("Preserve interactive assessment and structured answers", requirement_statements)
+        self.assertIn("Preserve automatic initialization and Plan generation", requirement_statements)
+        self.assertIn("Decide and document assess compatibility", requirement_statements)
+        self.assertIn("Cover CLI UX routing with deterministic tests", requirement_statements)
+        self.assertIn('`battalion "My requirement."` is treated as mission text, not an invalid command.', plan)
+        self.assertIn("Successful bare requirement invocation enters assessment.", plan)
+        self.assertIn("Existing explicit subcommands such as review, status, plan, and evidence-report remain callable.", plan)
+        self.assertIn("The configured five-question cap remains enforced.", plan)
+        self.assertIn("Bare mission text could collide with existing subcommand names or parser expectations.", plan)
+        self.assertIn("Application, API, data, or deployment behavior unrelated to CLI routing.", plan)
+        self.assertNotIn("Create application entrypoint", plan)
+        self.assertNotIn("Malformed requests receive controlled error responses", plan)
+        self.assertNotIn("target deployment environment", plan.lower())
+
+        first_plan = plan
+        first_answers = read_yaml(self.ledger_path)["human_answers"]
+        self.run_cli("assess")
+        self.assertEqual((self.workspace / "mission-plan.md").read_text(encoding="utf-8"), first_plan)
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], mission)
+        self.assertEqual(read_yaml(self.ledger_path)["human_answers"], first_answers)
+        self.assertNotIn("Documentation explains installation or setup", plan)
+
+    def test_cli_ux_human_decisions_regenerate_strict_bare_invocation_plan(self):
+        mission = (
+            "For the best user experience, a user should not have to know or enter an assessment command.\n\n"
+            "The primary interface should simply be:\n\n"
+            "battalion \"My requirement.\"\n\n"
+            "All other aspects must remain the same, including interactively getting answers for questions from the user."
+        )
+        self.run_cli("assess", "--requirement", mission)
+        ledger = read_yaml(self.ledger_path)
+        ledger["human_answers"] = [
+            {
+                "id": "cli.workflow.entrypoint",
+                "question": "What invocation should start a mission?",
+                "answer": 'Only `battalion "My requirement."` should start a mission.',
+                "status": "resolved",
+                "answered_by": "human",
+                "answered_at": "2026-07-12T00:00:00Z",
+            },
+            {
+                "id": "cli.workflow.errors",
+                "question": "How should unsupported invocation shapes behave?",
+                "answer": "No arguments, unsupported single-token input like battalion frobnicate, unquoted multi-token junk, and reserved-command collisions must produce clear errors.",
+                "status": "resolved",
+                "answered_by": "human",
+                "answered_at": "2026-07-12T00:00:00Z",
+            },
+            {
+                "id": "cli.workflow.assess",
+                "question": "What should happen to assess?",
+                "answer": "Remove assess from public CLI routing and help. Assessment remains internal workflow logic only.",
+                "status": "resolved",
+                "answered_by": "human",
+                "answered_at": "2026-07-12T00:00:00Z",
+            },
+        ]
+        ledger["requirements"] = []
+        ledger["assumptions"] = []
+        ledger["risks"] = []
+        ledger["clarifications"] = []
+        write_yaml(self.ledger_path, ledger)
+
+        self.run_cli("assess")
+        regenerated = read_yaml(self.ledger_path)
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+        statements = [item["statement"] for item in regenerated["requirements"]]
+
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], mission)
+        self.assertIn("Handle bare requirement routing to assessment", statements)
+        self.assertIn("Define parser errors, reserved commands, and collision behavior", statements)
+        self.assertIn("Preserve interactive assessment and structured answers", statements)
+        self.assertIn("Preserve automatic initialization and Plan generation", statements)
+        self.assertIn("Remove public assess command and document intent-first intake", statements)
+        self.assertIn("Cover CLI UX routing with deterministic tests", statements)
+        self.assertIn('`battalion "My requirement."` is the only supported mission-start path.', plan)
+        self.assertIn("No arguments produce a clear error.", plan)
+        self.assertIn("Unsupported single-token input such as `battalion frobnicate` produces a clear error.", plan)
+        self.assertIn("Unquoted multi-token junk produces a clear error.", plan)
+        self.assertIn("Reserved-command collisions are handled clearly and deterministically.", plan)
+        self.assertIn("Quoted and multiline natural-language requirements are accepted as valid mission arguments.", plan)
+        self.assertIn("`assess` is removed from public CLI routing and help.", plan)
+        self.assertIn("Assessment remains internal workflow logic only.", plan)
+        self.assertNotIn("retained only as a documented compatibility/advanced path", plan)
+        self.assertNotIn("Create application entrypoint", plan)
+        self.assertNotIn("Malformed requests receive controlled error responses", plan)
+        self.assertNotIn("target deployment environment", plan.lower())
+
+    def test_cli_ux_missing_human_decisions_do_not_invent_strict_semantics(self):
+        mission = (
+            "For the best user experience, a user should not have to know or enter an assessment command. "
+            "The primary interface should simply be battalion \"My requirement.\""
+        )
+        self.run_cli("assess", "--requirement", mission)
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("No arguments produce a clear error.", plan)
+        self.assertNotIn("Unsupported single-token input such as `battalion frobnicate` produces a clear error.", plan)
+        self.assertNotIn("`assess` is removed from public CLI routing and help.", plan)
+
+    def test_cli_ux_conflicting_human_decisions_are_surfaced_before_planning(self):
+        mission = "Make Battalion mission intake intent-first from the CLI."
+        self.run_cli("assess", "--requirement", mission)
+        ledger = read_yaml(self.ledger_path)
+        ledger["human_answers"] = [
+            {
+                "id": "cli.workflow.assess",
+                "question": "What should happen to assess?",
+                "answer": "Remove assess from public CLI routing and help.",
+                "status": "resolved",
+                "answered_by": "human",
+                "answered_at": "2026-07-12T00:00:00Z",
+            },
+            {
+                "id": "cli.workflow.assess",
+                "question": "What should happen to assess?",
+                "answer": "Keep assess as an advanced compatibility command.",
+                "status": "resolved",
+                "answered_by": "human",
+                "answered_at": "2026-07-12T00:00:01Z",
+            },
+        ]
+        ledger["requirements"] = []
+        write_yaml(self.ledger_path, ledger)
+
+        output = self.run_cli("assess")
+        regenerated = read_yaml(self.ledger_path)
+
+        self.assertIn("CLARIFICATION_REQUIRED", output)
+        self.assertEqual(regenerated["requirements"], [])
+        self.assertEqual(regenerated.get("planning_status"), "conflicting_human_decisions")
+        self.assertFalse((self.workspace / "mission-plan.md").exists())
+
+    def test_malformed_human_decision_data_fails_clearly_before_planning(self):
+        self.run_cli("assess", "--requirement", "Make Battalion mission intake intent-first from the CLI.")
+        ledger = read_yaml(self.ledger_path)
+        ledger["human_answers"] = [{"id": "cli.workflow.assess", "status": "resolved"}]
+        ledger["requirements"] = []
+        write_yaml(self.ledger_path, ledger)
+
+        output = self.run_cli("assess")
+        regenerated = read_yaml(self.ledger_path)
+
+        self.assertIn("CLARIFICATION_REQUIRED", output)
+        self.assertEqual(regenerated["requirements"], [])
+        self.assertEqual(regenerated.get("planning_status"), "invalid_human_decisions")
+        self.assertFalse((self.workspace / "mission-plan.md").exists())
+
+    def test_low_confidence_unknown_mission_blocks_planning_instead_of_inventing_requirements(self):
+        output = self.run_cli("assess", "--requirement", "Make it better.")
+        assessment = json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))
+        ledger = read_yaml(self.ledger_path)
+
+        self.assertIn("Assessment Result\n-----------------\nCLARIFICATION_REQUIRED", output)
+        self.assertIn("Mission Type\nUnknown / Unknown", output)
+        self.assertEqual(assessment["assessment_outcome"], "CLARIFICATION_REQUIRED")
+        self.assertEqual(assessment["readiness"], "NOT_READY")
+        self.assertEqual(ledger["requirements"], [])
+        self.assertEqual(ledger.get("planning_status"), "insufficiently_understood")
+        self.assertIn("What specific behavior, artifact, or system should change?", output)
+        self.assertFalse((self.workspace / "mission-plan.md").exists())
+        self.assertNotIn("Create application entrypoint", json.dumps(ledger))
+        self.assertNotIn("Implement the requested mission behavior", json.dumps(ledger))
+        self.assertNotIn("Implement secure error handling", json.dumps(ledger))
+
     def mission_scoped_assessment(self, requirement):
         self.run_cli("assess", "--requirement", requirement)
         return json.loads((self.workspace / "assessment.json").read_text(encoding="utf-8"))

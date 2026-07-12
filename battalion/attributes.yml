@@ -45,6 +45,20 @@ attributes:
       - frontend
       - ui
       - user interface
+  CLI:
+    description: Mission includes command-line interface or terminal workflow work.
+    threshold: 1
+    indicators:
+      - cli
+      - command
+      - subcommand
+      - parser
+      - argument
+      - flag
+      - terminal
+      - interactive
+      - prompt
+      - routing
   DATABASE:
     description: Mission includes database or persistence work.
     threshold: 2

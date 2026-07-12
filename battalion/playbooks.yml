@@ -5,6 +5,8 @@ missionTypes:
     model: {}
   ui:
     component: {}
+  cli:
+    workflow: {}
   infrastructure:
     deployment: {}
   testing:
@@ -151,6 +153,55 @@ playbooks:
     defaultAssumptions:
       - Existing design system and UI conventions apply.
     outOfScope:
+      - data
+      - infrastructure
+
+  cli.workflow:
+    parent: cli
+    subtype: workflow
+    description: CLI workflow and command-routing work
+    keywords:
+      - CLI
+      - command
+      - subcommand
+      - parser
+      - argument
+      - flag
+      - terminal
+      - interactive
+      - prompt
+      - routing
+      - battalion
+    leadingQuestions:
+      - id: entrypoint
+        question: What CLI entrypoint or invocation should change?
+        examples:
+          - battalion "My requirement."
+          - battalion assess "My requirement."
+          - battalion review
+      - id: preserved_commands
+        question: Which existing commands or workflows must continue working?
+        examples:
+          - review, status, evidence-report
+          - assess as compatibility alias
+          - all current subcommands
+      - id: interaction
+        question: What interactive behavior should be preserved or changed?
+        examples:
+          - Ask up to five questions
+          - Capture structured answers
+          - Generate the Plan in the same run
+      - id: compatibility
+        question: Should the old command remain as a compatibility path, hidden alias, or be removed?
+        examples:
+          - Keep assess as alias
+          - Hide from primary docs
+          - Remove entirely
+    defaultAssumptions:
+      - Existing explicit subcommands must remain distinguishable unless the requirement says otherwise.
+      - Existing interactive assessment behavior should be preserved unless the requirement says otherwise.
+    outOfScope:
+      - api
       - data
       - infrastructure
 
