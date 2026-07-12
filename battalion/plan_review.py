@@ -11,6 +11,32 @@ REVIEW_QUESTIONS = (
     "What does not match?",
     "What could not be verified?",
 )
+DECISION_SOURCES = {
+    "pr-approval": {
+        "label": "PR approval",
+        "default_status": "PENDING",
+        "description": "May satisfy human review evidence when observed.",
+    },
+    "pr-merge": {
+        "label": "PR merge",
+        "default_status": "PENDING",
+        "description": "May satisfy authorization or completion evidence when observed.",
+    },
+    "manual-artifact": {
+        "label": "Manual artifact update",
+        "default_status": "OPTIONAL_FALLBACK",
+        "description": "Optional fallback for workflows without a pull request.",
+    },
+}
+DECISION_STATUSES = {
+    "PENDING",
+    "OBSERVED",
+    "APPROVED",
+    "EXECUTED",
+    "MISSING",
+    "UNABLE_TO_VERIFY",
+    "OPTIONAL_FALLBACK",
+}
 
 
 def _clean(value):
@@ -23,6 +49,42 @@ def _slug(value):
 
 def _contains_normalized(haystack, needle):
     return _slug(needle) in _slug(haystack)
+
+
+def parse_decision_evidence(values):
+    records = []
+    for raw_value in values or []:
+        value = str(raw_value).strip()
+        source, separator, remainder = value.partition("=")
+        source = source.strip().lower().replace("_", "-")
+        if source not in DECISION_SOURCES:
+            expected = ", ".join(sorted(DECISION_SOURCES))
+            raise ValueError(f"Unknown human decision source: {source or value}. Expected one of: {expected}.")
+        status = DECISION_SOURCES[source]["default_status"]
+        reference = ""
+        if separator:
+            status_text, reference_separator, reference_text = remainder.partition(":")
+            status = status_text.strip().upper().replace("-", "_") or status
+            reference = reference_text.strip() if reference_separator else ""
+        if status not in DECISION_STATUSES:
+            expected = ", ".join(sorted(DECISION_STATUSES))
+            raise ValueError(f"Unknown human decision status for {source}: {status}. Expected one of: {expected}.")
+        records.append({
+            "source": source,
+            "label": DECISION_SOURCES[source]["label"],
+            "status": status,
+            "reference": reference,
+            "description": DECISION_SOURCES[source]["description"],
+        })
+    if records:
+        return records
+    return [{
+        "source": "manual-artifact",
+        "label": DECISION_SOURCES["manual-artifact"]["label"],
+        "status": DECISION_SOURCES["manual-artifact"]["default_status"],
+        "reference": "",
+        "description": DECISION_SOURCES["manual-artifact"]["description"],
+    }]
 
 
 def parse_plan_requirements(plan_text):
@@ -162,7 +224,7 @@ def _classify_acceptance(requirement, criterion, evidence):
     }
 
 
-def review_plan(workspace, plan_path=None, evidence_paths=None):
+def review_plan(workspace, plan_path=None, evidence_paths=None, decision_evidence=None):
     project = workspace.parent
     plan = plan_path or workspace / "mission-plan.md"
     if not plan.is_absolute():
@@ -203,9 +265,14 @@ def review_plan(workspace, plan_path=None, evidence_paths=None):
         "does_not_match": [item for item in findings if item["result"] == "DOES_NOT_MATCH"],
         "could_not_verify": [item for item in findings if item["result"] == "UNABLE_TO_VERIFY"],
         "out_of_scope_evidence": out_of_scope,
+        "human_decision_evidence": parse_decision_evidence(decision_evidence),
         "human_decision_inputs": [
             "Humans decide whether to proceed, accept risk, defer, reject, merge, deploy, or approve work.",
             "Plan Review findings and recommendations are advisory signals only.",
+            "PR approval may satisfy human review evidence when observed.",
+            "PR merge may satisfy authorization or completion evidence when observed.",
+            "Manual artifact updates are optional fallback evidence for workflows without a pull request.",
+            "Passing tests, implementation completion, and Battalion recommendations are never human approval.",
         ],
     }
 
@@ -278,6 +345,11 @@ def render_plan_review(result):
     lines.extend(["", "## What could not be verified?", ""])
     lines.extend(_finding_lines(result["could_not_verify"], "Every reviewed criterion had deterministic evidence."))
     lines.append("")
+    lines.append("Human decision evidence:")
+    for item in result["human_decision_evidence"]:
+        reference = f" Reference: {item['reference']}" if item.get("reference") else ""
+        lines.append(f"- {item['label']} [{item['status']}]: {item['description']}{reference}")
+    lines.append("")
     lines.append("Human decision inputs:")
     lines.extend(f"- {item}" for item in result["human_decision_inputs"])
     return "\n".join(lines).rstrip() + "\n"
@@ -295,8 +367,13 @@ def _finding_lines(values, empty):
     return lines
 
 
-def write_plan_review(workspace, plan_path=None, evidence_paths=None):
-    result = review_plan(workspace, plan_path=plan_path, evidence_paths=evidence_paths)
+def write_plan_review(workspace, plan_path=None, evidence_paths=None, decision_evidence=None):
+    result = review_plan(
+        workspace,
+        plan_path=plan_path,
+        evidence_paths=evidence_paths,
+        decision_evidence=decision_evidence,
+    )
     markdown = render_plan_review(result)
     (workspace / "plan-review.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (workspace / "plan-review.md").write_text(markdown, encoding="utf-8")

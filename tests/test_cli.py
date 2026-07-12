@@ -1647,6 +1647,98 @@ class BattalionCliTests(unittest.TestCase):
             ["Evidence Report v1", "Catalog migration"],
         )
 
+    def test_plan_review_reports_pr_decision_evidence_without_manual_artifact_edits(self):
+        self.initialize_with_prompt("Improve human decision UX.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Report human decision sources",
+                "- Acceptance Criteria:",
+                "  - Review output reports PR approval as human review evidence.",
+                "  - Review output reports PR merge as authorization evidence.",
+                "  - Manual artifact updates remain an optional fallback.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "review.txt"
+        evidence.parent.mkdir()
+        evidence.write_text(
+            "R-001 PASS\n"
+            "Review output reports PR approval as human review evidence.\n"
+            "Review output reports PR merge as authorization evidence.\n"
+            "Manual artifact updates remain an optional fallback.\n",
+            encoding="utf-8",
+        )
+
+        output = self.run_cli(
+            "review",
+            "--evidence", "evidence/review.txt",
+            "--decision-evidence", "pr-approval=observed:PR #28 approved by human reviewer",
+            "--decision-evidence", "pr-merge=executed:PR #28 merged by repository maintainer",
+        )
+        review = (self.workspace / "plan-review.md").read_text(encoding="utf-8")
+        data = json.loads((self.workspace / "plan-review.json").read_text(encoding="utf-8"))
+
+        self.assertIn("PR approval: OBSERVED", output)
+        self.assertIn("PR merge: EXECUTED", output)
+        self.assertIn("Human decision evidence:", review)
+        self.assertIn("PR approval [OBSERVED]", review)
+        self.assertIn("PR merge [EXECUTED]", review)
+        self.assertIn("Manual artifact updates are optional fallback evidence for workflows without a pull request.", review)
+        self.assertEqual(
+            [(item["source"], item["status"]) for item in data["human_decision_evidence"]],
+            [("pr-approval", "OBSERVED"), ("pr-merge", "EXECUTED")],
+        )
+        self.assertNotIn("manually edit", review.lower())
+        self.assertNotIn("Decision: APPROVED", review)
+        self.assertNotIn("Decision: MERGE", review)
+
+    def test_plan_review_defaults_manual_artifact_to_optional_fallback(self):
+        self.initialize_with_prompt("Improve human decision UX.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Keep manual record optional",
+                "- Acceptance Criteria:",
+                "  - Manual artifact updates remain an optional fallback.",
+            ]),
+            encoding="utf-8",
+        )
+
+        self.run_cli("review")
+        review = (self.workspace / "plan-review.md").read_text(encoding="utf-8")
+        data = json.loads((self.workspace / "plan-review.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Manual artifact update [OPTIONAL_FALLBACK]", review)
+        self.assertIn("Passing tests, implementation completion, and Battalion recommendations are never human approval.", review)
+        self.assertEqual(data["human_decision_evidence"][0]["source"], "manual-artifact")
+        self.assertEqual(data["human_decision_evidence"][0]["status"], "OPTIONAL_FALLBACK")
+
+    def test_plan_template_human_decisions_support_pr_evidence_sources(self):
+        self.initialize_with_prompt(
+            "Implement Human Decision UX v1. PR approval may satisfy review evidence. "
+            "PR merge may satisfy authorization evidence. Manual artifact updates are fallback only."
+        )
+        self.run_cli("assess")
+        self.run_cli("plan")
+        plan = (self.workspace / "mission-plan.md").read_text(encoding="utf-8")
+
+        self.assertIn("manual Plan or evidence edits are not the default completion mechanism", plan)
+        self.assertIn("PR approval may satisfy human review evidence when observed.", plan)
+        self.assertIn("PR merge may satisfy authorization or completion evidence when observed.", plan)
+        self.assertIn("Manual artifact updates remain an optional fallback for workflows without a PR.", plan)
+        self.assertIn("Passing tests, implementation completion, and Battalion recommendations must never be inferred as human approval.", plan)
+
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
