@@ -1604,6 +1604,45 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("## What does not match?", review)
         self.assertIn("## What could not be verified?", review)
 
+    def test_plan_review_status_detection_is_scoped_to_requirement_line(self):
+        self.initialize_with_prompt("Create Plan Review v1.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Preserve passing evidence",
+                "- Acceptance Criteria:",
+                "  - Passing criterion.",
+                "",
+                "### R-002",
+                "",
+                "- Statement: Document failed findings",
+                "- Acceptance Criteria:",
+                "  - The report summarizes failed findings.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "review.txt"
+        evidence.parent.mkdir()
+        evidence.write_text(
+            "R-001 PASS: Passing criterion.\n"
+            "The report summarizes failed findings.\n",
+            encoding="utf-8",
+        )
+
+        self.run_cli("review", "--evidence", "evidence/review.txt")
+        data = json.loads((self.workspace / "plan-review.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(data["does_not_match"], [])
+        self.assertEqual(
+            [item["criterion"] for item in data["matches"]],
+            ["Passing criterion.", "The report summarizes failed findings."],
+        )
+
     def test_plan_review_records_out_of_scope_evidence_without_reviewing_it_as_plan_work(self):
         self.initialize_with_prompt("Create Plan Review v1.")
         (self.workspace / "mission-plan.md").write_text(
@@ -1738,6 +1777,126 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("PR merge may satisfy authorization or completion evidence when observed.", plan)
         self.assertIn("Manual artifact updates remain an optional fallback for workflows without a PR.", plan)
         self.assertIn("Passing tests, implementation completion, and Battalion recommendations must never be inferred as human approval.", plan)
+
+    def test_evidence_report_generates_decision_support_artifacts_from_plan_review(self):
+        self.initialize_with_prompt("Implement Evidence Report v1.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Generate Evidence Report",
+                "- Acceptance Criteria:",
+                "  - Evidence Report writes Markdown.",
+                "  - Evidence Report writes JSON.",
+                "",
+                "## Out of Scope",
+                "",
+                "- GitHub API integration.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "report.txt"
+        evidence.parent.mkdir()
+        evidence.write_text(
+            "Evidence Report writes Markdown.\n"
+            "Evidence Report writes JSON.\n",
+            encoding="utf-8",
+        )
+
+        self.run_cli("review", "--evidence", "evidence/report.txt")
+        output = self.run_cli("evidence-report")
+        first_json = (self.workspace / "evidence-report.json").read_text(encoding="utf-8")
+        first_markdown = (self.workspace / "evidence-report.md").read_text(encoding="utf-8")
+        self.run_cli("evidence-report")
+
+        report = json.loads((self.workspace / "evidence-report.json").read_text(encoding="utf-8"))
+        markdown = (self.workspace / "evidence-report.md").read_text(encoding="utf-8")
+
+        self.assertIn("Evidence Report", output)
+        self.assertEqual(first_json, (self.workspace / "evidence-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(first_markdown, markdown)
+        self.assertEqual(report["schema_version"], "battalion.evidence_report.v1")
+        self.assertEqual(report["artifact_version"], "v1")
+        self.assertEqual(report["lifecycle_status"], "Completed")
+        self.assertEqual(report["lineage"]["mission"], "not recorded by Plan Review v1")
+        self.assertEqual(report["lineage"]["plan"], ".battalion/mission-plan.md")
+        self.assertEqual(report["lineage"]["plan_review"], ".battalion/plan-review.json")
+        self.assertEqual(report["lineage"]["plan_review_schema_version"], "battalion.plan_review.v1")
+        self.assertEqual(report["summary"]["verified"], 2)
+        self.assertEqual(report["summary"]["failed"], 0)
+        self.assertEqual(report["summary"]["unable_to_verify"], 0)
+        self.assertIn("## Verified Findings", markdown)
+        self.assertIn("Evidence Reports summarize Plan Review facts", markdown)
+        self.assertIn("The latest non-superseded Evidence Report is authoritative", markdown)
+        self.assertIn("Open assumptions and risks are not supplied by Plan Review v1.", markdown)
+
+    def test_evidence_report_summarizes_failed_unknown_and_deviation_findings(self):
+        self.initialize_with_prompt("Implement Evidence Report v1.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Verify report behavior",
+                "- Acceptance Criteria:",
+                "  - Verified criterion.",
+                "",
+                "### R-002",
+                "",
+                "- Statement: Report failed behavior",
+                "- Acceptance Criteria:",
+                "  - Failed criterion.",
+                "",
+                "### R-003",
+                "",
+                "- Statement: Report unknown behavior",
+                "- Acceptance Criteria:",
+                "  - Unknown criterion.",
+                "",
+                "## Out of Scope",
+                "",
+                "- GitHub API integration.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "report.txt"
+        evidence.parent.mkdir()
+        evidence.write_text(
+            "Verified criterion.\n"
+            "R-002 FAILED: mismatch.\n"
+            "Implemented GitHub API integration.\n",
+            encoding="utf-8",
+        )
+
+        self.run_cli(
+            "review",
+            "--evidence", "evidence/report.txt",
+            "--decision-evidence", "pr-approval=observed:PR #42 approved by human reviewer",
+        )
+        self.run_cli("evidence-report")
+        report = json.loads((self.workspace / "evidence-report.json").read_text(encoding="utf-8"))
+        markdown = (self.workspace / "evidence-report.md").read_text(encoding="utf-8")
+
+        self.assertEqual(report["summary"]["verified"], 1)
+        self.assertEqual(report["summary"]["failed"], 1)
+        self.assertEqual(report["summary"]["unable_to_verify"], 1)
+        self.assertEqual(report["summary"]["deviations"], 1)
+        self.assertEqual(report["failed_findings"][0]["requirement_id"], "R-002")
+        self.assertEqual(report["unable_to_verify_findings"][0]["requirement_id"], "R-003")
+        self.assertEqual(report["deviations"][0]["scope_item"], "GitHub API integration")
+        self.assertIn("Address failed findings before asking humans to accept the work.", report["battalion_recommendation"])
+        self.assertIn("PR approval [OBSERVED]", markdown)
+        self.assertIn("This report does not approve, reject, merge, deploy, authorize execution, or gate work.", markdown)
+        self.assertIn("Passing tests, implementation completion, and Battalion recommendations are never human approval.", markdown)
+        self.assertNotIn("Decision: APPROVED", markdown)
+        self.assertNotIn("Decision: MERGE", markdown)
 
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)

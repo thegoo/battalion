@@ -51,6 +51,12 @@ def _contains_normalized(haystack, needle):
     return _slug(needle) in _slug(haystack)
 
 
+def _requirement_reports_status(content, requirement_id, terms):
+    status_terms = "|".join(sorted((re.escape(term) for term in terms), key=len, reverse=True))
+    pattern = rf"^.*\b{re.escape(requirement_id)}\b\s*(?::|-)?\s*(?:{status_terms})\b.*$"
+    return re.search(pattern, content, flags=re.IGNORECASE | re.MULTILINE) is not None
+
+
 def parse_decision_evidence(values):
     records = []
     for raw_value in values or []:
@@ -186,7 +192,7 @@ def _classify_acceptance(requirement, criterion, evidence):
         content = item["content"]
         if item["status"] != "AVAILABLE":
             continue
-        if re.search(rf"{re.escape(requirement['id'])}.*(FAIL|FAILED|MISMATCH|DOES_NOT_MATCH)", content, flags=re.IGNORECASE | re.DOTALL):
+        if _requirement_reports_status(content, requirement["id"], ("FAIL", "FAILED", "MISMATCH", "DOES_NOT_MATCH")):
             return {
                 "requirement_id": requirement["id"],
                 "criterion": criterion,
@@ -195,7 +201,7 @@ def _classify_acceptance(requirement, criterion, evidence):
                 "finding": f"{requirement['id']}: Evidence reports a mismatch for this requirement.",
                 "recommendation": "Correct the implementation or update the Plan through human review.",
             }
-        if _contains_normalized(content, criterion) or re.search(rf"{re.escape(requirement['id'])}.*(PASS|PASSED|MATCH|VERIFIED)", content, flags=re.IGNORECASE | re.DOTALL):
+        if _contains_normalized(content, criterion) or _requirement_reports_status(content, requirement["id"], ("PASS", "PASSED", "MATCH", "VERIFIED")):
             return {
                 "requirement_id": requirement["id"],
                 "criterion": criterion,

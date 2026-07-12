@@ -9,6 +9,7 @@ from .assessment import infer_attributes, write_assessment, write_mission_contex
 from .assurance import assure
 from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
+from .evidence_report import write_evidence_report
 from .executor_dispatch import SUPPORTED_EXECUTORS, dispatch_engineering_brief
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .mission_resolve import resolve_mission
@@ -1397,6 +1398,39 @@ def review(args, cwd):
     print(f"- {workspace / 'plan-review.json'}")
 
 
+def evidence_report(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    review_path = Path(args.review) if args.review else None
+    try:
+        result, _ = write_evidence_report(workspace, review_path=review_path)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    append_event(workspace, "evidence_report_completed", {
+        "path": "evidence-report.md",
+        "schema_version": result["schema_version"],
+        "artifact_version": result["artifact_version"],
+        "lifecycle_status": result["lifecycle_status"],
+        "plan": result["lineage"]["plan"],
+        "plan_review": result["lineage"]["plan_review"],
+        "verified": result["summary"]["verified"],
+        "failed": result["summary"]["failed"],
+        "unable_to_verify": result["summary"]["unable_to_verify"],
+        "deviations": result["summary"]["deviations"],
+    })
+    print("Evidence Report")
+    print(f"- Plan: {result['lineage']['plan']}")
+    print(f"- Plan Review: {result['lineage']['plan_review']}")
+    print(f"- Lifecycle status: {result['lifecycle_status']}")
+    print(f"- Verified: {result['summary']['verified']}")
+    print(f"- Failed: {result['summary']['failed']}")
+    print(f"- Unable to verify: {result['summary']['unable_to_verify']}")
+    print(f"- Deviations: {result['summary']['deviations']}")
+    print(f"- Recommendation: {result['battalion_recommendation']}")
+    print("Artifacts:")
+    print(f"- {workspace / 'evidence-report.md'}")
+    print(f"- {workspace / 'evidence-report.json'}")
+
+
 def parser():
     result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
@@ -1446,6 +1480,8 @@ def parser():
             "Manual artifact updates are optional fallback evidence, not the default PR workflow."
         ),
     )
+    p = commands.add_parser("evidence-report")
+    p.add_argument("--review", help="Plan Review JSON path. Defaults to .battalion/plan-review.json.")
     commands.add_parser("report")
     return result
 
@@ -1463,6 +1499,7 @@ def main(argv=None, cwd=None):
         "assure": assurance,
         "resolve": resolve,
         "review": review,
+        "evidence-report": evidence_report,
         "report": report,
     }[args.command](args, cwd)
 
