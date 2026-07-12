@@ -393,6 +393,31 @@ The overall result still uses:
 
 These statuses are assurance signals and recommendations only. They do not deploy, merge, approve, block, or otherwise own the human engineering decision. `GO` is impossible unless status is `GREEN`.
 
+### `battalion review`
+
+Runs Plan Review v1 against a completed implementation by comparing supplied evidence files to the authoritative Plan.
+
+```bash
+battalion review --evidence evidence/tests.txt
+```
+
+Plan Review writes:
+
+```text
+.battalion/plan-review.md
+.battalion/plan-review.json
+```
+
+Plan Review answers only:
+
+- What did the Plan require?
+- What evidence exists?
+- What matches?
+- What does not match?
+- What could not be verified?
+
+Plan Review reports factual findings and advisory recommendations for human decision-making. It does not approve, reject, merge, deploy, authorize execution, gate work, implement Evidence Report v1, select executors, or modify the authoritative Plan.
+
 ### `battalion resolve`
 
 Creates a focused implementation correction package from failed Mission Assurance findings.

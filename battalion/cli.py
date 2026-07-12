@@ -12,6 +12,7 @@ from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, disp
 from .executor_dispatch import SUPPORTED_EXECUTORS, dispatch_engineering_brief
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .mission_resolve import resolve_mission
+from .plan_review import write_plan_review
 from .reporting import render_report
 from .storage import append_event, read_yaml, root, timestamp, write_yaml
 
@@ -1352,6 +1353,33 @@ def resolve(args, cwd):
         raise SystemExit(str(exc)) from exc
 
 
+def review(args, cwd):
+    workspace = workspace_or_exit(cwd)
+    plan_path = Path(args.plan) if args.plan else None
+    try:
+        result, _ = write_plan_review(workspace, plan_path=plan_path, evidence_paths=args.evidence or [])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    append_event(workspace, "plan_review_completed", {
+        "path": "plan-review.md",
+        "plan": result["plan"],
+        "evidence_count": len(result["evidence"]),
+        "matches": len(result["matches"]),
+        "does_not_match": len(result["does_not_match"]),
+        "could_not_verify": len(result["could_not_verify"]),
+    })
+    print("Plan Review")
+    print(f"- Plan: {result['plan']}")
+    print(f"- Requirements reviewed: {len(result['requirements'])}")
+    print(f"- Evidence files: {len(result['evidence'])}")
+    print(f"- Matches: {len(result['matches'])}")
+    print(f"- Does not match: {len(result['does_not_match'])}")
+    print(f"- Could not verify: {len(result['could_not_verify'])}")
+    print("Artifacts:")
+    print(f"- {workspace / 'plan-review.md'}")
+    print(f"- {workspace / 'plan-review.json'}")
+
+
 def parser():
     result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, dispatch, assurance, and resolve")
     commands = result.add_subparsers(dest="command", required=True)
@@ -1389,6 +1417,9 @@ def parser():
     p = commands.add_parser("resolve")
     p.add_argument("--executor", help=f"Send failed Mission Assurance findings to a supported executor: {', '.join(sorted(SUPPORTED_EXECUTORS))}")
     p.add_argument("--mode", choices=["auto", "standard"], default="standard", help="Executor invocation mode; auto permits routine local implementation work but never source control or deployment actions")
+    p = commands.add_parser("review")
+    p.add_argument("--plan", help="Authoritative Plan path. Defaults to .battalion/mission-plan.md.")
+    p.add_argument("--evidence", action="append", help="Evidence file to compare against the Plan; repeat for multiple files.")
     commands.add_parser("report")
     return result
 
@@ -1405,6 +1436,7 @@ def main(argv=None, cwd=None):
         "assess": assessment,
         "assure": assurance,
         "resolve": resolve,
+        "review": review,
         "report": report,
     }[args.command](args, cwd)
 

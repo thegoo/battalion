@@ -44,8 +44,8 @@ Create a Plan Review v1 capability that compares completed implementation eviden
 
 - Humans decide whether to proceed, accept risk, defer, reject, merge, deploy, or approve the work.
 - Battalion recommendations are advisory signals, not approvals.
-- HD-001 [OPEN]: Confirm that the Plan Template v1 PR has merged before Plan Review v1 implementation begins.
-- HD-002 [OPEN]: Approve the final Plan Review v1 output shape before treating it as canonical review input for human decisions.
+- HD-001 [APPROVED]: Plan Template v1 merged as `Freeze Plan Template v1 (#27)` before Plan Review v1 implementation began; human approval is recorded in `docs/evidence/0002-plan-review-v1.md`.
+- HD-002 [APPROVED]: Human approved the Plan Review v1 output for PR readiness review; final canonical acceptance remains a human merge decision.
 
 ## Requirements
 
