@@ -1500,6 +1500,153 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(first_metadata["failed_findings"], second_metadata["failed_findings"])
         self.assertEqual(first_metadata["assurance_sha256"], second_metadata["assurance_sha256"])
 
+    def test_plan_review_reports_only_doctrine_approved_questions(self):
+        self.initialize_with_prompt("Create Plan Review v1.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Render review output",
+                "- Acceptance Criteria:",
+                "  - Review output answers: What did the Plan require?",
+                "  - Review output answers: What evidence exists?",
+                "",
+                "### R-002",
+                "",
+                "- Statement: Preserve human authority",
+                "- Acceptance Criteria:",
+                "  - Review output does not approve, reject, merge, deploy, authorize execution, or make the human decision.",
+                "",
+                "## Out of Scope",
+                "",
+                "- Evidence Report v1.",
+                "- Skills.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "review.txt"
+        evidence.parent.mkdir()
+        evidence.write_text(
+            "R-001 PASS\n"
+            "Review output answers: What did the Plan require?\n"
+            "Review output answers: What evidence exists?\n"
+            "R-002 PASS\n",
+            encoding="utf-8",
+        )
+
+        output = self.run_cli("review", "--evidence", "evidence/review.txt")
+        review = (self.workspace / "plan-review.md").read_text(encoding="utf-8")
+        data = json.loads((self.workspace / "plan-review.json").read_text(encoding="utf-8"))
+
+        for heading in (
+            "## What did the Plan require?",
+            "## What evidence exists?",
+            "## What matches?",
+            "## What does not match?",
+            "## What could not be verified?",
+        ):
+            self.assertIn(heading, review)
+        self.assertEqual(data["schema_version"], "battalion.plan_review.v1")
+        self.assertEqual(len(data["matches"]), 3)
+        self.assertEqual(data["does_not_match"], [])
+        self.assertEqual(data["could_not_verify"], [])
+        self.assertIn("Plan Review reports facts and advisory recommendations.", review)
+        self.assertIn("Humans make engineering decisions.", review)
+        self.assertNotIn("Decision: APPROVED", review)
+        self.assertNotIn("Decision: REJECTED", review)
+        self.assertNotIn("Decision: MERGE", review)
+        self.assertNotIn("Decision: DEPLOY", review)
+        self.assertIn("Plan Review", output)
+
+    def test_plan_review_covers_mismatch_and_unable_to_verify(self):
+        self.initialize_with_prompt("Create Plan Review v1.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Compare evidence",
+                "- Acceptance Criteria:",
+                "  - Matching criterion.",
+                "",
+                "### R-002",
+                "",
+                "- Statement: Report mismatch",
+                "- Acceptance Criteria:",
+                "  - Mismatching criterion.",
+                "",
+                "### R-003",
+                "",
+                "- Statement: Report unknowns",
+                "- Acceptance Criteria:",
+                "  - Missing criterion.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "review.txt"
+        evidence.parent.mkdir()
+        evidence.write_text("Matching criterion.\nR-002 FAILED: observed mismatch.\n", encoding="utf-8")
+
+        self.run_cli("review", "--evidence", "evidence/review.txt")
+        data = json.loads((self.workspace / "plan-review.json").read_text(encoding="utf-8"))
+        review = (self.workspace / "plan-review.md").read_text(encoding="utf-8")
+
+        self.assertEqual([item["requirement_id"] for item in data["matches"]], ["R-001"])
+        self.assertEqual([item["requirement_id"] for item in data["does_not_match"]], ["R-002"])
+        self.assertEqual([item["requirement_id"] for item in data["could_not_verify"]], ["R-003"])
+        self.assertIn("## What does not match?", review)
+        self.assertIn("## What could not be verified?", review)
+
+    def test_plan_review_records_out_of_scope_evidence_without_reviewing_it_as_plan_work(self):
+        self.initialize_with_prompt("Create Plan Review v1.")
+        (self.workspace / "mission-plan.md").write_text(
+            "\n".join([
+                "# Mission",
+                "",
+                "## Requirements",
+                "",
+                "### R-001",
+                "",
+                "- Statement: Keep review narrow",
+                "- Acceptance Criteria:",
+                "  - Plan Review v1 stays deterministic.",
+                "",
+                "## Out of Scope",
+                "",
+                "- Evidence Report v1.",
+                "- Skills.",
+                "- Integrations.",
+                "- Catalog migration.",
+                "- Executor changes.",
+                "- Autonomous gating.",
+            ]),
+            encoding="utf-8",
+        )
+        evidence = self.cwd / "evidence" / "review.txt"
+        evidence.parent.mkdir()
+        evidence.write_text(
+            "Plan Review v1 stays deterministic.\n"
+            "Implemented Evidence Report v1.\n"
+            "Added catalog migration.\n",
+            encoding="utf-8",
+        )
+
+        self.run_cli("review", "--evidence", "evidence/review.txt")
+        data = json.loads((self.workspace / "plan-review.json").read_text(encoding="utf-8"))
+
+        self.assertEqual([item["requirement_id"] for item in data["matches"]], ["R-001"])
+        self.assertEqual(
+            [item["scope_item"] for item in data["out_of_scope_evidence"]],
+            ["Evidence Report v1", "Catalog migration"],
+        )
+
     def test_assessment_generates_json_and_markdown(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         self.run_cli("assess")
