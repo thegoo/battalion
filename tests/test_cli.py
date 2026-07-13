@@ -375,6 +375,7 @@ class BattalionCliTests(unittest.TestCase):
         help_text = output.getvalue()
         self.assertIn("Battalion v0.8.0", help_text)
         self.assertIn('Primary start path: battalion "Describe the mission"', help_text)
+        self.assertIn("--ai-assisted-intake", help_text)
         self.assertNotIn("assess", help_text)
         self.assertNotIn("init", help_text)
         self.assertNotIn("clarify", help_text)
@@ -1066,6 +1067,65 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Assessment Result", output)
         self.assertIn("Authoritative Plan:", output)
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Create a blank README.md to initialize the repo.")
+
+    def test_compound_docs_mission_preserves_distinct_requested_artifacts(self):
+        output = self.run_cli("Create README.md and CONTRIBUTING.md")
+
+        ledger = read_yaml(self.ledger_path)
+        statements = [item["statement"] for item in ledger["requirements"]]
+        artifacts = [item["path"] for item in ledger["intake"]["requested_artifacts"]]
+
+        self.assertIn("Authoritative Plan:", output)
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Create README.md and CONTRIBUTING.md")
+        self.assertEqual(ledger["intake"]["mode"], "deterministic")
+        self.assertEqual(artifacts, ["README.md", "CONTRIBUTING.md"])
+        self.assertIn("Create README.md documentation", statements)
+        self.assertIn("Create CONTRIBUTING.md documentation", statements)
+        self.assertTrue(all("README-only" not in item for item in statements))
+
+    def test_compound_docs_questions_are_not_readme_only(self):
+        self.run_cli("Create README.md and CONTRIBUTING.md")
+
+        ledger = read_yaml(self.ledger_path)
+        acceptance = [
+            criterion
+            for requirement in ledger["requirements"]
+            for criterion in requirement["acceptance"]
+        ]
+
+        self.assertIn("README.md exists", acceptance)
+        self.assertIn("CONTRIBUTING.md exists", acceptance)
+
+    def test_default_intake_is_deterministic_no_ai(self):
+        self.run_cli("Create README.md and CONTRIBUTING.md")
+
+        intake = read_yaml(self.ledger_path)["intake"]
+        self.assertEqual(intake["mode"], "deterministic")
+        self.assertEqual(intake["provider"], "deterministic")
+
+    def test_ai_assisted_intake_flag_routes_to_stub_without_provider(self):
+        output = self.run_cli("--ai-assisted-intake", "Create README.md and CONTRIBUTING.md")
+
+        intake = read_yaml(self.ledger_path)["intake"]
+        self.assertIn("Authoritative Plan:", output)
+        self.assertEqual(intake["mode"], "ai_assisted")
+        self.assertEqual(intake["provider"], "stub")
+        self.assertEqual([item["path"] for item in intake["requested_artifacts"]], ["README.md", "CONTRIBUTING.md"])
+
+    def test_too_complex_deterministic_intake_recommends_ai_assisted_without_plan(self):
+        requirement = " ".join([
+            "Create a mission intake system with parser changes, synthesis contracts, documentation, tests, evidence, retrospective,",
+            "compound artifact handling, unsupported input handling, reserved command collision handling, deterministic refusal behavior,",
+            "traceability preservation, unchanged original mission text, catalog output, playbook matching boundaries, help updates,",
+            "default no-AI behavior, optional AI-assisted behavior, provider stubs, negative paths, happy paths, and full suite validation.",
+        ] * 2)
+
+        with self.assertRaises(SystemExit) as raised:
+            main([requirement], self.cwd)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--ai-assisted-intake", str(raised.exception))
+        self.assertFalse((self.workspace / "mission-plan.md").exists())
 
     def test_quoted_multiline_requirement_routes_to_assessment_and_generates_plan(self):
         requirement = "Create a README.md.\n\nInclude setup instructions and project purpose."

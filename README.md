@@ -135,6 +135,20 @@ battalion ./story.md
 
 For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, the bare invocation initializes one from the supplied requirement and then writes assessment artifacts.
 
+Mission intake starts deterministic and no-AI by default. Normal compound requirements such as:
+
+```bash
+battalion "Create README.md and CONTRIBUTING.md"
+```
+
+are structured locally and preserve each requested artifact as distinct mission intent. For larger or ambiguous requirements where deterministic intake cannot structure the mission confidently, rerun with explicit opt-in:
+
+```bash
+battalion --ai-assisted-intake "Describe the mission"
+```
+
+The AI-assisted path is limited to mission intake synthesis. It may structure raw human requirements into traceable intent, but deterministic cataloging, playbook matching, and Plan generation still own the authoritative Plan.
+
 Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces internal artifacts for later Battalion phases:
 
 - `.battalion/assessment.json`

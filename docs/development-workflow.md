@@ -30,11 +30,14 @@ From any scratch directory:
 ```bash
 battalion "Describe the mission"
 battalion "Create a README.md"
+battalion "Create README.md and CONTRIBUTING.md"
+battalion --ai-assisted-intake "Describe a larger ambiguous mission"
 battalion plan
 battalion assure
 ```
 
 Battalion should create `.battalion` automatically on a quoted mission requirement.
+Default intake is deterministic and no-AI. Use `--ai-assisted-intake` only when Battalion refuses a larger or ambiguous mission and recommends the opt-in path.
 
 ## Documentation expectations
 

@@ -11,6 +11,7 @@ from .classification import write_default_attribute_catalog
 from .dispatcher import DISPATCHER_ACTIONS, FAILURE_TYPES, RESULT_OUTCOMES, dispatch_next, execute_active, runtime_status
 from .evidence_report import write_evidence_report
 from .executor_dispatch import SUPPORTED_EXECUTORS, dispatch_engineering_brief
+from .intake import AI_ASSISTED_INTAKE_FLAG, synthesize_mission_intake
 from .mission_analyst import generate_mission_contract, reconcile_mission_contract
 from .mission_resolve import resolve_mission
 from .plan_review import write_plan_review
@@ -1153,7 +1154,14 @@ def assessment(args, cwd):
         requirement = read_requirement_input(requirement_value, cwd)
         if not requirement:
             raise SystemExit("Requirement cannot be empty.")
+        try:
+            intake = synthesize_mission_intake(requirement, ai_assisted=getattr(args, "ai_assisted_intake", False))
+        except ValueError as exc:
+            _usage_error(str(exc))
         workspace = set_assessment_requirement(cwd, requirement)
+        ledger = read_yaml(workspace / "ledger.yaml")
+        ledger["intake"] = intake.to_dict()
+        write_yaml(workspace / "ledger.yaml", ledger)
     elif not workspace.exists():
         if not sys.stdin.isatty():
             raise SystemExit('Provide a requirement, for example: battalion "Create a README"')
@@ -1161,7 +1169,14 @@ def assessment(args, cwd):
         requirement = prompt_user("> ").strip()
         if not requirement:
             raise SystemExit("Requirement cannot be empty.")
+        try:
+            intake = synthesize_mission_intake(requirement, ai_assisted=getattr(args, "ai_assisted_intake", False))
+        except ValueError as exc:
+            _usage_error(str(exc))
         workspace = set_assessment_requirement(cwd, requirement)
+        ledger = read_yaml(workspace / "ledger.yaml")
+        ledger["intake"] = intake.to_dict()
+        write_yaml(workspace / "ledger.yaml", ledger)
     try:
         ensure_assessed_contract(workspace)
     except ValueError as exc:
@@ -1360,6 +1375,8 @@ def ensure_assessed_contract(workspace):
     contract = generate_mission_contract(mission["id"], contract_prompt, timestamp())
     contract["mission_prompt"] = mission_prompt
     contract["human_answers"] = ledger.get("human_answers", [])
+    if ledger.get("intake"):
+        contract["intake"] = ledger["intake"]
     _normalize_trace_excerpts(contract, mission_prompt)
     contract["mission_attributes"] = infer_attributes(mission, contract)
     write_yaml(workspace / "ledger.yaml", contract)
@@ -1507,14 +1524,35 @@ def _merge_human_answers(existing, answers, resolver):
 
 
 def _assessment_context_text(mission_prompt, ledger):
+    context = []
+    intake = ledger.get("intake")
+    if isinstance(intake, dict):
+        artifacts = [
+            item.get("path", "").strip()
+            for item in intake.get("requested_artifacts", [])
+            if isinstance(item, dict) and item.get("path")
+        ]
+        if artifacts:
+            context.append("Structured intake requested artifacts: " + ", ".join(artifacts))
+        mode = intake.get("mode")
+        provider = intake.get("provider")
+        if mode:
+            context.append(f"Structured intake mode: {mode}")
+        if provider:
+            context.append(f"Structured intake provider: {provider}")
     answers = [
         item.get("answer", "").strip()
         for item in ledger.get("human_answers", [])
         if isinstance(item, dict) and item.get("answer")
     ]
-    if not answers:
+    if not answers and not context:
         return mission_prompt
-    return "\n".join([mission_prompt, "", "Human answer context:", *[f"- {answer}" for answer in answers]])
+    parts = [mission_prompt]
+    if context:
+        parts.extend(["", "Structured intake context:", *[f"- {item}" for item in context]])
+    if answers:
+        parts.extend(["", "Human answer context:", *[f"- {answer}" for answer in answers]])
+    return "\n".join(parts)
 
 
 def _normalize_trace_excerpts(contract, mission_prompt):
@@ -1754,6 +1792,11 @@ def parser():
         description="Battalion v0.8.0 deterministic mission intake, planning, review, evidence, dispatch, assurance, and resolve",
         epilog='Primary start path: battalion "Describe the mission".',
     )
+    result.add_argument(
+        AI_ASSISTED_INTAKE_FLAG,
+        action="store_true",
+        help="Opt in to AI-assisted mission intake synthesis for larger or ambiguous requirements.",
+    )
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
     p.add_argument("--acceptance", action="append", help="Acceptance criterion; repeat for multiple criteria")
@@ -1803,6 +1846,12 @@ def _bare_requirement_args(argv):
     argv = list(argv)
     if not argv:
         _usage_error('Provide a mission requirement, for example: battalion "Create a README"')
+    ai_assisted = False
+    if AI_ASSISTED_INTAKE_FLAG in argv:
+        ai_assisted = True
+        argv = [item for item in argv if item != AI_ASSISTED_INTAKE_FLAG]
+        if not argv:
+            _usage_error(f'Provide a mission requirement after {AI_ASSISTED_INTAKE_FLAG}.')
     first = argv[0]
     if first in COMMANDS or first.startswith("-"):
         return None
@@ -1822,6 +1871,7 @@ def _bare_requirement_args(argv):
         requirement_text=first.strip(),
         requirement=None,
         resolver=None,
+        ai_assisted_intake=ai_assisted,
     )
 
 

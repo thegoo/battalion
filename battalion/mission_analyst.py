@@ -205,6 +205,23 @@ def _is_readme_mission(prompt: str) -> bool:
     return _matches(prompt, r"\breadme(?:\.md)?\b")
 
 
+def _requested_markdown_artifacts(prompt: str) -> List[str]:
+    artifacts = []
+    seen = set()
+    for match in re.finditer(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*\.md\b", prompt):
+        artifact = match.group(0)
+        key = artifact.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        artifacts.append(artifact)
+    return artifacts
+
+
+def _is_mission_intake_synthesis_mission(prompt: str) -> bool:
+    return _matches(prompt, r"\bmission intake synthesis\b|\bAI-assisted intake\b|\bdeterministic intake\b")
+
+
 def _is_cli_workflow_mission(prompt: str) -> bool:
     return any(_matches(prompt, pattern) for pattern in (
         r"\bcli\b",
@@ -506,6 +523,181 @@ def _generate_readme_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
     }
 
 
+def _generate_document_artifacts_contract(mission_id: str, prompt: str, artifacts: Sequence[str]) -> Dict[str, Any]:
+    constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
+    constraints["functional"] = [
+        {
+            "id": f"FC-{index:03d}",
+            "statement": f"{artifact} must be created as a distinct documentation artifact.",
+            "prompt_excerpt": _excerpt(prompt, (re.escape(artifact),)),
+        }
+        for index, artifact in enumerate(artifacts, start=1)
+    ]
+    constraints["testing"] = [{
+        "id": "TEST-001",
+        "statement": "Documentation validation must confirm every requested artifact exists.",
+        "prompt_excerpt": _excerpt(prompt, tuple(re.escape(artifact) for artifact in artifacts)),
+    }]
+    requirements = []
+    for index, artifact in enumerate(artifacts, start=1):
+        requirements.append(_requirement(
+            f"R-{index:03d}",
+            f"Create {artifact} documentation",
+            [
+                f"{artifact} exists",
+                f"{artifact} content stays within the requested documentation scope",
+            ],
+            [_review("ux", f"Review {artifact} clarity and fit for the requested documentation purpose.")],
+            "developer",
+            _trace(_excerpt(prompt, (re.escape(artifact),)), f"The mission explicitly requests {artifact} as its own deliverable.", [f"FC-{index:03d}"]),
+        ))
+    requirements.append(_requirement(
+        f"R-{len(requirements) + 1:03d}",
+        "Validate requested documentation artifacts",
+        [
+            *[f"Deterministic validation confirms {artifact} exists" for artifact in artifacts],
+            "Negative validation rejects unsupported application, API, data, UI, infrastructure, or integration scope",
+        ],
+        [_review("tester", "Confirm documentation validation evidence is reproducible.")],
+        "tester",
+        _trace(prompt, "The mission requires evidence that each requested documentation artifact exists.", ["TEST-001"]),
+    ))
+    assumptions = [{
+        "id": "A-001",
+        "statement": "No application code changes are required for this documentation-only mission.",
+        "traceability": _trace(prompt, "The requested deliverables are Markdown documentation artifacts.", _ids(constraints["functional"])),
+    }]
+    risks = [{
+        "id": "RISK-001",
+        "statement": "Requested documentation may need repository-specific details that are not present in the mission text.",
+        "traceability": _trace(prompt, "Documentation quality depends on available repository context and human-provided intent.", []),
+    }]
+    return {
+        "mission_id": mission_id,
+        "mission_prompt": prompt,
+        "generated_by": "mission_analyst",
+        "requirements": requirements,
+        "constraints": constraints,
+        "assumptions": assumptions,
+        "risks": risks,
+        "clarifications": [],
+    }
+
+
+def _generate_mission_intake_synthesis_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
+    constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
+    constraints["functional"] = [
+        {
+            "id": "FC-001",
+            "statement": "Default mission intake must remain deterministic and no-AI.",
+            "prompt_excerpt": _excerpt(prompt, (r"no AI first", r"Default")),
+        },
+        {
+            "id": "FC-002",
+            "statement": "Compound documentation requests must preserve every requested artifact.",
+            "prompt_excerpt": _excerpt(prompt, (r"README\.md", r"CONTRIBUTING\.md", r"compound")),
+        },
+        {
+            "id": "FC-003",
+            "statement": "AI-assisted synthesis must be explicit opt-in during mission intake only.",
+            "prompt_excerpt": _excerpt(prompt, (r"AI-assisted", r"opt-in", r"mission intake")),
+        },
+        {
+            "id": "FC-004",
+            "statement": "Over-complex deterministic input must stop clearly without a fabricated Plan.",
+            "prompt_excerpt": _excerpt(prompt, (r"too large", r"too-complex", r"fabricated Plan")),
+        },
+    ]
+    constraints["testing"] = [{
+        "id": "TEST-001",
+        "statement": "Regression tests must cover compound docs, no-AI default behavior, AI opt-in routing, refusal behavior, and existing CLI routing.",
+        "prompt_excerpt": _excerpt(prompt, (r"TDD", r"Test coverage", r"full deterministic suite")),
+    }]
+    requirements = [
+        _requirement(
+            "R-001",
+            "Introduce mission intake synthesis interfaces",
+            [
+                "Mission intake exposes a deterministic synthesis interface.",
+                "The AI-assisted path routes through an explicit stub or adapter boundary without requiring a provider.",
+                "Synthesis output records traceability to the original human requirement.",
+                "The original mission text remains unchanged.",
+            ],
+            [_review("architect", "Validate the intake boundary preserves Battalion doctrine.")],
+            "developer",
+            _trace(prompt, "The mission requires contracts that support future AI-assisted intake without letting AI own planning.", ["FC-001", "FC-003"]),
+        ),
+        _requirement(
+            "R-002",
+            "Preserve compound documentation artifacts during deterministic intake",
+            [
+                '`battalion "Create README.md and CONTRIBUTING.md"` records README.md and CONTRIBUTING.md as distinct requested artifacts.',
+                "The generated contract includes separate deliverables or requirements for README.md and CONTRIBUTING.md.",
+                "Questions and acceptance criteria are not README-only when multiple docs are requested.",
+            ],
+            [_review("tester", "Validate compound documentation scope is not collapsed.")],
+            "developer",
+            _trace(prompt, "The mission names README.md and CONTRIBUTING.md as the canonical compound requirement.", ["FC-002"]),
+        ),
+        _requirement(
+            "R-003",
+            "Add discoverable AI-assisted intake opt-in",
+            [
+                "A CLI flag exposes AI-assisted intake as an explicit opt-in.",
+                "The flag is visible in help and docs.",
+                "The stub path does not call or require an AI provider.",
+                "Plan generation remains deterministic after structured intake.",
+            ],
+            [_review("ux", "Confirm the opt-in is visible and clear.")],
+            "developer",
+            _trace(prompt, "The product decision requires AI assistance only by explicit mission-intake argument.", ["FC-003"]),
+        ),
+        _requirement(
+            "R-004",
+            "Refuse over-complex deterministic intake without fabricating a Plan",
+            [
+                "Over-complex deterministic input exits with a clear non-destructive error.",
+                "The error recommends rerunning with the AI-assisted intake flag.",
+                "No misleading authoritative Plan is produced for refused deterministic input.",
+            ],
+            [_review("architect", "Validate refusal behavior preserves evidence over assertion.")],
+            "developer",
+            _trace(prompt, "The mission requires stopping clearly when deterministic intake cannot structure input confidently.", ["FC-004"]),
+        ),
+        _requirement(
+            "R-005",
+            "Preserve existing command-routing behavior",
+            [
+                "Happy-path tests cover normal compound documentation intake and AI-assisted stub routing.",
+                "No-argument behavior remains a clear error.",
+                "Unsupported input, unquoted junk, reserved command collisions, and explicit subcommands preserve existing behavior.",
+                "The full deterministic test suite passes.",
+            ],
+            [_review("tester", "Confirm existing CLI behavior did not regress.")],
+            "tester",
+            _trace(prompt, "The mission explicitly preserves recent CLI routing behavior.", ["TEST-001"]),
+        ),
+    ]
+    return {
+        "mission_id": mission_id,
+        "mission_prompt": prompt,
+        "generated_by": "mission_analyst",
+        "requirements": requirements,
+        "constraints": constraints,
+        "assumptions": [{
+            "id": "A-001",
+            "statement": "No real AI provider is required for this slice; the AI-assisted path is limited to an explicit stub or adapter boundary.",
+            "traceability": _trace(prompt, "The mission requires future AI support without requiring a provider in this slice.", ["FC-003"]),
+        }],
+        "risks": [{
+            "id": "RISK-001",
+            "statement": "Future AI provider behavior remains out of scope for this slice and must be validated when introduced.",
+            "traceability": _trace(prompt, "This slice creates an adapter boundary but deliberately avoids provider integration.", ["FC-003"]),
+        }],
+        "clarifications": [],
+    }
+
+
 def _generate_cli_workflow_contract(mission_id: str, prompt: str) -> Dict[str, Any]:
     decisions = _cli_workflow_decisions(prompt)
     constraints = {category: [] for category in ("functional", "technical", "security", "testing", "operational")}
@@ -667,8 +859,13 @@ def _generate_cli_workflow_contract(mission_id: str, prompt: str) -> Dict[str, A
 
 def generate_mission_contract(mission_id: str, prompt: str, created_at: str) -> Dict[str, Any]:
     """Convert an immutable mission prompt into a traceable initial contract."""
+    if _is_mission_intake_synthesis_mission(prompt):
+        return _generate_mission_intake_synthesis_contract(mission_id, prompt)
     if _is_plan_template_mission(prompt):
         return _generate_plan_template_contract(mission_id, prompt)
+    markdown_artifacts = _requested_markdown_artifacts(prompt)
+    if len(markdown_artifacts) > 1:
+        return _generate_document_artifacts_contract(mission_id, prompt, markdown_artifacts)
     if _is_readme_mission(prompt):
         return _generate_readme_contract(mission_id, prompt)
     if _is_cli_workflow_mission(prompt):
