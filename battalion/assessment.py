@@ -356,6 +356,23 @@ def _title_label(value: str) -> str:
     return labels.get(value, value.replace("_", " ").title())
 
 
+def _requested_markdown_artifacts(text: str) -> List[str]:
+    artifacts = []
+    seen = set()
+    for match in re.finditer(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*\.md\b", text):
+        artifact = match.group(0)
+        key = artifact.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        artifacts.append(artifact)
+    return artifacts
+
+
+def _is_mission_intake_synthesis_requirement(text: str) -> bool:
+    return _contains(text, r"\bmission intake synthesis\b|\bAI-assisted intake\b|\bdeterministic intake\b")
+
+
 def assess_requirement_text(requirement: str) -> Dict[str, Any]:
     """Produce the concise v1 requirement-understanding model.
 
@@ -378,6 +395,11 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
     question_details = _playbook_question_details(text, playbook_match)
     questions = [_question_text(item) for item in question_details] + _material_questions(text, domains)
     questions = _dedupe(questions)
+    markdown_artifacts = _requested_markdown_artifacts(text)
+    mission_intake_synthesis = _is_mission_intake_synthesis_requirement(text)
+    if mission_intake_synthesis or (playbook_match.get("key") == "documentation.readme" and len(markdown_artifacts) > 1):
+        question_details = []
+        questions = []
     out_of_scope = _playbook_out_of_scope(playbook_match) or _out_of_scope_domains(domains)
 
     if playbook_match["status"] == "tie":
@@ -434,7 +456,13 @@ def assess_requirement_text(requirement: str) -> Dict[str, Any]:
             "tie_candidates": playbook_match["tie_candidates"],
         },
         "mission_intent": _mission_intent(text, playbook_match),
-        "understanding": understanding,
+        "understanding": (
+            _mission_intake_synthesis_understanding()
+            if mission_intake_synthesis
+            else _compound_document_understanding(markdown_artifacts)
+            if len(markdown_artifacts) > 1
+            else understanding
+        ),
         "detected_scale": scale,
         "detected_domains": domains,
         "assumptions": assumptions,
@@ -502,6 +530,24 @@ def _requirement_understanding(text: str, domains: List[str], playbook_match: Di
     if "ui" not in domains and "cli" not in domains:
         values.append("No UI detected")
     return _dedupe(values) or ["Requirement type is not yet classified"]
+
+
+def _compound_document_understanding(artifacts: List[str]) -> List[str]:
+    return [
+        "Create multiple documentation artifacts.",
+        *[f"Create {artifact} as a distinct documentation artifact." for artifact in artifacts],
+        "No UI detected",
+    ]
+
+
+def _mission_intake_synthesis_understanding() -> List[str]:
+    return [
+        "Create mission intake synthesis interfaces.",
+        "Default intake remains deterministic and no-AI.",
+        "AI-assisted synthesis is explicit opt-in during mission intake only.",
+        "Over-complex deterministic input stops instead of fabricating a Plan.",
+        "Existing command-routing behavior remains in scope for regression coverage.",
+    ]
 
 
 def _requirement_assumptions(text: str, domains: List[str], playbook_match: Dict[str, Any] = None) -> List[str]:
