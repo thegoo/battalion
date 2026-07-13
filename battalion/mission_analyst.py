@@ -3,6 +3,8 @@
 import re
 from typing import Any, Dict, List, Sequence
 
+from .intake import requested_markdown_artifact_paths
+
 
 FRAMEWORK_TERMS = ("express", "fastify", "fastapi", "flask", "django", "nestjs", "koa", "hapi", "spring", "asp.net")
 DEPLOYMENT_TERMS = ("production", "aws", "azure", "gcp", "cloud", "kubernetes", "serverless", "hosting")
@@ -202,20 +204,16 @@ def _is_plan_template_mission(prompt: str) -> bool:
 
 
 def _is_readme_mission(prompt: str) -> bool:
+    requested_artifacts = {artifact.lower() for artifact in _requested_markdown_artifacts(prompt)}
+    if "readme.md" in requested_artifacts:
+        return True
+    if _matches(prompt, r"\breadme\.md\b"):
+        return False
     return _matches(prompt, r"\breadme(?:\.md)?\b")
 
 
 def _requested_markdown_artifacts(prompt: str) -> List[str]:
-    artifacts = []
-    seen = set()
-    for match in re.finditer(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*\.md\b", prompt):
-        artifact = match.group(0)
-        key = artifact.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        artifacts.append(artifact)
-    return artifacts
+    return requested_markdown_artifact_paths(prompt)
 
 
 def _is_mission_intake_synthesis_mission(prompt: str) -> bool:
