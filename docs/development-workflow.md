@@ -28,12 +28,13 @@ The test suite is deterministic and should not require network access.
 From any scratch directory:
 
 ```bash
-battalion assess --requirement "Create a README.md"
+battalion "Describe the mission"
+battalion "Create a README.md"
 battalion plan
 battalion assure
 ```
 
-Battalion should create `.battalion` automatically on the first meaningful command.
+Battalion should create `.battalion` automatically on a quoted mission requirement.
 
 ## Documentation expectations
 

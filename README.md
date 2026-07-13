@@ -55,13 +55,13 @@ Before v1, users should read the changelog before upgrading between minor versio
 The primary workflow is:
 
 ```bash
-battalion assess "Describe the mission"
+battalion "Describe the mission"
 battalion dispatch --executor codex
 battalion assure
 battalion report
 ```
 
-`battalion assess` initializes mission state when needed, asks any required human questions in the same run, writes assessment artifacts, and generates the authoritative Plan. Use `battalion assure` after implementation evidence and reviews exist.
+`battalion "Describe the mission"` initializes mission state when needed, asks any required human questions in the same run, writes assessment artifacts, and generates the authoritative Plan. Use `battalion assure` after implementation evidence and reviews exist.
 
 ## Repository structure
 
@@ -119,27 +119,21 @@ Multiline YAML values, such as mission requirements, are written as readable blo
 
 ## Commands
 
-### `battalion assess`
+### `battalion "Describe the mission"`
 
 Evaluates whether Battalion understands the mission well enough to create a reliable execution plan, then generates the authoritative Plan when assessment is complete.
 
 ```bash
-battalion assess "Create an API endpoint to retrieve customer email."
+battalion "Create an API endpoint to retrieve customer email."
 ```
 
-If no requirement is provided and no mission exists yet, Battalion prompts once for the requirement:
+You can also provide a requirement from a file:
 
 ```bash
-battalion assess
+battalion ./story.md
 ```
 
-You can also assess a requirement from a file:
-
-```bash
-battalion assess ./story.md
-```
-
-For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, `assess` initializes one from the supplied requirement and then writes assessment artifacts.
+For this workflow, Battalion treats the operator input as a requirement, not a prompt. If the current directory does not yet contain a `.battalion` workspace, the bare invocation initializes one from the supplied requirement and then writes assessment artifacts.
 
 Assessment may generate or refresh the mission contract from the authoritative mission requirement. It produces internal artifacts for later Battalion phases:
 
@@ -176,7 +170,7 @@ Assessment is driven by packaged mission playbooks. The MVP playbooks cover:
 
 If multiple playbooks match equally, Assessment asks one concise mission-type clarification before planning.
 
-When questions are required and the terminal is interactive, `assess` asks them immediately with simple ordinal numbering:
+When questions are required and the terminal is interactive, Battalion asks them immediately with simple ordinal numbering:
 
 ```text
 Assessment needs 3 human answer(s) before it can produce the authoritative Plan.
@@ -196,7 +190,7 @@ Creates the execution-ready engineering specification.
 battalion plan
 ```
 
-The normal first-run path is `battalion assess "Describe the mission"`, which generates the Plan automatically. Use `battalion plan` only to regenerate the Plan from an existing assessed mission or to record manual requirements in legacy/internal workflows.
+The normal first-run path is `battalion "Describe the mission"`, which generates the Plan automatically. Use `battalion plan` only to regenerate the Plan from an existing assessed mission or to record manual requirements in legacy/internal workflows.
 
 Planning currently consumes assessment readiness values of `READY` or `READY_WITH_RISK` as deterministic assessment signals before rendering a Plan. The generated Plan does not include readiness classifications or proceed/no-proceed language. It writes:
 
@@ -637,17 +631,11 @@ Avoid globally installed `pytest` executables that use a different Python enviro
 
 ### Command cannot find a mission
 
-Run `battalion assess "Describe the mission"` in the current directory or navigate to a directory containing `.battalion`.
+Run `battalion "Describe the mission"` in the current directory or navigate to a directory containing `.battalion`.
 
 ### Planning says the mission is not ready
 
-Run:
-
-```bash
-battalion assess
-```
-
-Answer the questions Assessment asks. Planning currently requires readiness `READY` or `READY_WITH_RISK` as assessment signals. Humans still decide whether to proceed.
+Run `battalion "Describe the mission"` with the clarified requirement, or answer the questions Battalion asks during mission intake. Planning currently requires readiness `READY` or `READY_WITH_RISK` as assessment signals. Humans still decide whether to proceed.
 
 ## Changelog
 

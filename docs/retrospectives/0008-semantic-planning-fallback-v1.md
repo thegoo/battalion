@@ -32,7 +32,10 @@ The TDD pass caught the same class of defect in a narrower form: missing, malfor
 
 - Shell quoting for multiline mission text remains a UX concern for terminal users.
 - The next bare-command UX slice can now proceed from a regenerated Plan that explicitly removes `assess` from public routing and help.
+- Public CLI routing needs dedicated regression coverage separate from internal workflow coverage; otherwise hidden/internal command helpers can make removed commands appear tested while the public parser still exposes them.
 
 ## Recommendation
 
 Proceed to the bare-command UX slice only from the regenerated CLI workflow Plan grounded in structured human decisions. Do not implement it from the prior generic application Plan or from a manually patched Plan.
+
+For the remove-public-assess-command follow-up, use the regenerated `.battalion/mission-plan.md` that was produced by Battalion from structured human decisions. The slice is ready for PR review once humans inspect the uncommitted diff and evidence.

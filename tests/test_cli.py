@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from argparse import Namespace
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -11,7 +12,7 @@ import yaml
 
 from battalion.assurance import assure
 from battalion.classification import ATTRIBUTE_SCHEMA_VERSION, AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
-from battalion.cli import apply_clarification_actions, initialize_mission_workspace, main
+from battalion.cli import NO_MISSION_MESSAGE, apply_clarification_actions, assessment, initialize_mission_workspace, main
 from battalion.dispatcher import load_assignments
 from battalion.mission_analyst import generate_mission_contract
 from battalion.models import AssuranceResult
@@ -68,7 +69,30 @@ class BattalionCliTests(unittest.TestCase):
     def run_cli(self, *args):
         output = StringIO()
         with redirect_stdout(output):
-            main(list(args), self.cwd)
+            if args and args[0] == "assess":
+                internal = list(args[1:])
+                requirement = None
+                requirement_text = None
+                resolver = None
+                index = 0
+                while index < len(internal):
+                    value = internal[index]
+                    if value == "--requirement":
+                        index += 1
+                        requirement = internal[index]
+                    elif value == "--resolver":
+                        index += 1
+                        resolver = internal[index]
+                    elif value.startswith("--"):
+                        raise SystemExit(f"unrecognized internal assessment argument: {value}")
+                    elif requirement_text is None:
+                        requirement_text = value
+                    else:
+                        raise SystemExit(f"unrecognized internal assessment argument: {value}")
+                    index += 1
+                assessment(Namespace(requirement_text=requirement_text, requirement=requirement, resolver=resolver), self.cwd)
+            else:
+                main(list(args), self.cwd)
         return output.getvalue()
 
     def initialize(self):
@@ -350,14 +374,40 @@ class BattalionCliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 0)
         help_text = output.getvalue()
         self.assertIn("Battalion v0.8.0", help_text)
+        self.assertIn('Primary start path: battalion "Describe the mission"', help_text)
+        self.assertNotIn("assess", help_text)
         self.assertNotIn("init", help_text)
         self.assertNotIn("clarify", help_text)
 
-    def test_old_init_and_clarify_commands_are_removed_from_public_cli(self):
-        for command in ("init", "clarify"):
+    def test_removed_commands_are_rejected_from_public_cli(self):
+        for command in ("init", "clarify", "assess"):
             with self.subTest(command=command), self.assertRaises(SystemExit) as raised:
                 main([command], self.cwd)
             self.assertEqual(raised.exception.code, 2)
+            self.assertFalse(self.workspace.exists())
+
+    def test_no_arguments_error_clearly(self):
+        with self.assertRaises(SystemExit) as raised:
+            main([], self.cwd)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn('Provide a mission requirement, for example: battalion "Create a README"', str(raised.exception))
+        self.assertFalse(self.workspace.exists())
+
+    def test_unknown_single_word_command_like_input_is_not_silently_assessed(self):
+        with self.assertRaises(SystemExit) as raised:
+            main(["frobnicate"], self.cwd)
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("Unsupported command or mission input: frobnicate", str(raised.exception))
+        self.assertFalse(self.workspace.exists())
+
+    def test_unquoted_multi_token_junk_errors_and_does_not_create_workspace(self):
+        with self.assertRaises(SystemExit) as raised:
+            main(["foo", "bar"], self.cwd)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("Unquoted multi-token mission input is not supported", str(raised.exception))
+        self.assertFalse(self.workspace.exists())
 
     def classification_for_prompt(self, prompt):
         self.initialize_with_prompt(prompt)
@@ -480,7 +530,7 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt("Build a REST API.")
         (self.workspace / "attributes.yml").write_text("schema_version: wrong\nattributes: {}\n", encoding="utf-8")
         with self.assertRaises(SystemExit) as raised:
-            main(["assess"], self.cwd)
+            self.run_cli("assess")
         self.assertIn("attribute catalog must be valid YAML conforming to battalion.attributes.v1", str(raised.exception))
         self.assertIn("unsupported attribute catalog schema_version", str(raised.exception))
 
@@ -488,7 +538,7 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt("Build a REST API.")
         (self.workspace / "attributes.yml").write_text('{"schema_version":"battalion.attributes.v1","attributes":{}}\n', encoding="utf-8")
         with self.assertRaises(SystemExit) as raised:
-            main(["assess"], self.cwd)
+            self.run_cli("assess")
         self.assertIn("attribute catalog must be valid YAML conforming to battalion.attributes.v1", str(raised.exception))
         self.assertIn("JSON/object-literal catalogs are not accepted", str(raised.exception))
 
@@ -976,7 +1026,7 @@ class BattalionCliTests(unittest.TestCase):
     def test_missing_mission_has_friendly_error_for_every_mission_command(self):
         expected = (
             "Current directory does not contain a Battalion mission.\n\n"
-            "Run:\n\n  battalion assess \"Describe the mission\"\n\n"
+            "Run:\n\n  battalion \"Describe the mission\"\n\n"
             "or navigate to a directory containing .battalion"
         )
         commands = (
@@ -1005,6 +1055,72 @@ class BattalionCliTests(unittest.TestCase):
         self.assertTrue((self.workspace / "assessment.json").is_file())
         self.assertIn("Assessment Result", output)
         self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Create a blank README.md to initialize the repo")
+
+    def test_bare_requirement_routes_to_assessment_and_generates_plan(self):
+        output = self.run_cli("Create a blank README.md to initialize the repo.")
+
+        self.assertTrue((self.workspace / "mission.yaml").is_file())
+        self.assertTrue((self.workspace / "assessment.json").is_file())
+        self.assertTrue((self.workspace / "assessment.md").is_file())
+        self.assertTrue((self.workspace / "mission-plan.md").is_file())
+        self.assertIn("Assessment Result", output)
+        self.assertIn("Authoritative Plan:", output)
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], "Create a blank README.md to initialize the repo.")
+
+    def test_quoted_multiline_requirement_routes_to_assessment_and_generates_plan(self):
+        requirement = "Create a README.md.\n\nInclude setup instructions and project purpose."
+        output = self.run_cli(requirement)
+
+        self.assertTrue((self.workspace / "assessment.json").is_file())
+        self.assertTrue((self.workspace / "mission-plan.md").is_file())
+        self.assertIn("Assessment Result", output)
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], requirement)
+
+    def test_reserved_commands_still_route_to_explicit_handlers(self):
+        for command in ("review", "status", "plan", "evidence-report"):
+            with self.subTest(command=command), self.assertRaises(SystemExit) as raised:
+                main([command], self.cwd)
+
+            self.assertEqual(str(raised.exception), NO_MISSION_MESSAGE)
+            self.assertFalse(self.workspace.exists())
+
+    def test_public_docs_do_not_expose_assess_as_user_path(self):
+        repository = Path(__file__).resolve().parents[1]
+        public_docs = [
+            repository / "README.md",
+            repository / "docs" / "development-workflow.md",
+        ]
+
+        for path in public_docs:
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("battalion assess", text)
+                self.assertNotIn("assess subcommand", text.lower())
+                self.assertIn('battalion "Describe the mission"', text)
+
+    def test_bare_requirement_preserves_interactive_questions_and_structured_answers(self):
+        responses = iter(["api purpose", "data flow", "operations", "security", "volume"])
+        with patch("battalion.cli.sys.stdin.isatty", return_value=True), patch("builtins.input", side_effect=lambda _: next(responses)):
+            output = self.run_cli("Create API")
+
+        ledger = read_yaml(self.ledger_path)
+        self.assertIn("Question 1 of 5", output)
+        self.assertIn("Question 5 of 5", output)
+        self.assertNotIn("Question 6 of", output)
+        self.assertEqual(
+            [item["answer"] for item in ledger["human_answers"]],
+            ["api purpose", "data flow", "operations", "security", "volume"],
+        )
+        self.assertTrue(all(item["status"] == "resolved" for item in ledger["human_answers"]))
+        self.assertNotIn("api.purpose", output)
+
+    def test_explicit_subcommands_still_route_to_command_handlers(self):
+        self.run_cli("Create a blank README.md to initialize the repo.")
+
+        self.assertIn("Mission:", self.run_cli("status"))
+        self.assertIn("Generated execution-ready mission plan", self.run_cli("plan"))
+        self.assertIn("Plan Review", self.run_cli("review"))
+        self.assertIn("Evidence Report", self.run_cli("evidence-report"))
 
     def mission_contexts(self):
         return sorted((self.workspace / "missions").glob("*/mission-context.yml"))
@@ -1092,14 +1208,13 @@ class BattalionCliTests(unittest.TestCase):
             os.chdir(outside_repository)
             assurance_output = StringIO()
             with redirect_stdout(assurance_output):
-                main(["assess", "Portable mission"])
+                main(["Portable mission"])
                 main([
                     "plan", "--requirement", "Run anywhere",
                     "--acceptance", "CLI uses the current directory",
                     "--review", "architect",
                 ])
                 main(["dispatch"])
-                main(["assess"])
                 main(["assure"])
                 main(["report"])
         finally:
@@ -1167,7 +1282,7 @@ class BattalionCliTests(unittest.TestCase):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
         with self.assertRaises(SystemExit) as raised:
             main(["plan"], self.cwd)
-        self.assertEqual(str(raised.exception), "No mission assessment exists. Run battalion assess first.")
+        self.assertEqual(str(raised.exception), 'No mission assessment exists. Run battalion "Describe the mission" first.')
 
     def test_plan_consumes_assessment_output(self):
         self.initialize_with_prompt(self.CONSTRAINT_PROMPT)
@@ -2175,7 +2290,7 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Preserve explicit subcommands and command-name collision behavior", requirement_statements)
         self.assertIn("Preserve interactive assessment and structured answers", requirement_statements)
         self.assertIn("Preserve automatic initialization and Plan generation", requirement_statements)
-        self.assertIn("Decide and document assess compatibility", requirement_statements)
+        self.assertIn("Decide and document assessment command routing", requirement_statements)
         self.assertIn("Cover CLI UX routing with deterministic tests", requirement_statements)
         self.assertIn('`battalion "My requirement."` is treated as mission text, not an invalid command.', plan)
         self.assertIn("Successful bare requirement invocation enters assessment.", plan)

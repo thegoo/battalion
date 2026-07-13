@@ -23,9 +23,36 @@ NO_MISSION_MESSAGE = """Current directory does not contain a Battalion mission.
 
 Run:
 
-  battalion assess "Describe the mission"
+  battalion "Describe the mission"
 
 or navigate to a directory containing .battalion"""
+
+COMMANDS = {
+    "plan",
+    "dispatch",
+    "execute",
+    "status",
+    "assure",
+    "resolve",
+    "review",
+    "evidence-report",
+    "report",
+}
+RETIRED_COMMANDS = {"init", "clarify", "assess"}
+
+
+class CliUsageError(SystemExit):
+    def __init__(self, message):
+        super().__init__(2)
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
+def _usage_error(message):
+    print(f"battalion: error: {message}", file=sys.stderr)
+    raise CliUsageError(message)
 
 
 def workspace_or_exit(cwd):
@@ -146,7 +173,7 @@ def plan(args, cwd):
 def generate_authoritative_plan(workspace, architecture_references=None):
     assessment_path = workspace / "assessment.json"
     if not assessment_path.is_file():
-        raise SystemExit("No mission assessment exists. Run battalion assess first.")
+        raise SystemExit('No mission assessment exists. Run battalion "Describe the mission" first.')
     assessment = json.loads(assessment_path.read_text(encoding="utf-8"))
     readiness = assessment.get("readiness")
     if readiness not in {"READY", "READY_WITH_RISK"}:
@@ -617,7 +644,7 @@ def _implementation_guidance(mission, requirements, constraints, architecture_re
         lines.append("Do not introduce a runtime template loader, review engine, evidence report change, skill system, catalog migration, integration, commit, or pull request in this slice.")
     elif _has_text(text, r"\bcli\b|\bcommand\b|\bsubcommand\b|\bparser\b|\bargument\b|\bterminal\b|\bbattalion\s+[\"`]"):
         lines.append("Prioritize the command-routing and terminal UX contract while preserving existing explicit subcommands.")
-        lines.append("Keep the existing assessment workflow as the internal behavior unless the Plan explicitly says otherwise.")
+        lines.append("Keep the existing assessment workflow internal unless the Plan explicitly says otherwise.")
         lines.append("Do not introduce unrelated application, API, deployment, or integration behavior for this CLI UX slice.")
     elif constraints.get("functional") and _has_text(text, r"health"):
         lines.append("Prioritize a small, clear health-check surface that communicates service availability without broadening the API beyond the mission contract.")
@@ -662,7 +689,7 @@ def _work_breakdown(requirements, constraints):
         return [
             "### Phase 1 - Command contract",
             "",
-            "Define the bare invocation path, reserved subcommand behavior, and compatibility stance for `assess`.",
+            "Define the bare invocation path, reserved subcommand behavior, and public removal of `assess`.",
             "",
             "### Phase 2 - Parser and workflow routing",
             "",
@@ -706,7 +733,7 @@ def _execution_strategy_lines(mission, requirements, constraints, architecture_r
         ]
     if _has_text(text, r"\bcli\b|\bcommand\b|\bsubcommand\b|\bparser\b|\bargument\b|\bterminal\b|\bbattalion\s+[\"`]"):
         return [
-            "1. Confirm the desired bare invocation and the compatibility decision for `assess`.",
+            "1. Confirm the desired bare invocation and the public-routing decision for `assess`.",
             "2. Update parser routing so bare requirement text runs the existing assessment workflow.",
             "3. Preserve explicit subcommands and add collision tests for command-like input.",
             "4. Validate interactive questions, structured answers, automatic initialization, and same-run Plan generation.",
@@ -935,7 +962,7 @@ def clarify(args, cwd):
     ledger = read_yaml(workspace / "ledger.yaml")
     clarifications = ledger.get("clarifications")
     if not isinstance(clarifications, list):
-        raise SystemExit("Mission contract does not contain a valid clarifications list. Run 'battalion assess' first.")
+        raise SystemExit('Mission contract does not contain a valid clarifications list. Run battalion "Describe the mission" first.')
     open_items = [item for item in clarifications if item.get("status") == "open"]
     print(f"Clarifications: {len(open_items)} open, {sum(item.get('status') == 'resolved' for item in clarifications)} resolved")
     print_open_clarifications(open_items)
@@ -1129,7 +1156,7 @@ def assessment(args, cwd):
         workspace = set_assessment_requirement(cwd, requirement)
     elif not workspace.exists():
         if not sys.stdin.isatty():
-            raise SystemExit("Provide a requirement, for example: battalion assess \"Create a README\"")
+            raise SystemExit('Provide a requirement, for example: battalion "Create a README"')
         print("What would you like Battalion to assess?")
         requirement = prompt_user("> ").strip()
         if not requirement:
@@ -1722,7 +1749,11 @@ def evidence_report(args, cwd):
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="battalion", description="Battalion v0.8.0 deterministic mission assessment, planning, review, evidence, dispatch, assurance, and resolve")
+    result = argparse.ArgumentParser(
+        prog="battalion",
+        description="Battalion v0.8.0 deterministic mission intake, planning, review, evidence, dispatch, assurance, and resolve",
+        epilog='Primary start path: battalion "Describe the mission".',
+    )
     commands = result.add_subparsers(dest="command", required=True)
     p = commands.add_parser("plan"); p.add_argument("--requirement", help="Add one requirement manually instead of generating a mission contract")
     p.add_argument("--acceptance", action="append", help="Acceptance criterion; repeat for multiple criteria")
@@ -1742,10 +1773,6 @@ def parser():
     p.add_argument("--recommendation")
     p.add_argument("--decision-action", choices=sorted(DISPATCHER_ACTIONS), help="Dispatcher decision to record for non-COMPLETE simulated outcomes")
     commands.add_parser("status")
-    p = commands.add_parser("assess")
-    p.add_argument("requirement_text", nargs="?", help="Requirement text or path to a requirement file to assess")
-    p.add_argument("--requirement", help=argparse.SUPPRESS)
-    p.add_argument("--resolver", help=argparse.SUPPRESS)
     p = commands.add_parser("assure")
     p.add_argument("--run", action="store_true", help="Run deterministic local runtime validation in addition to static assurance")
     p.add_argument("--verbose", action="store_true", help="Show full assurance evidence in CLI output")
@@ -1770,14 +1797,42 @@ def parser():
     return result
 
 
+def _bare_requirement_args(argv):
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = list(argv)
+    if not argv:
+        _usage_error('Provide a mission requirement, for example: battalion "Create a README"')
+    first = argv[0]
+    if first in COMMANDS or first.startswith("-"):
+        return None
+    if first in RETIRED_COMMANDS:
+        _usage_error(f'Unsupported command: {first}. Start a mission with battalion "Describe the mission".')
+    if len(argv) > 1:
+        if any(item.startswith("-") for item in argv[1:]):
+            return None
+        _usage_error(
+            'Unquoted multi-token mission input is not supported. '
+            'Quote natural-language requirements, for example: battalion "Create a README".'
+        )
+    if len(argv) == 1 and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", first):
+        _usage_error(f'Unsupported command or mission input: {first}. Start a mission with battalion "Describe the mission".')
+    return argparse.Namespace(
+        command="mission-start",
+        requirement_text=first.strip(),
+        requirement=None,
+        resolver=None,
+    )
+
+
 def main(argv=None, cwd=None):
-    args = parser().parse_args(argv); cwd = Path.cwd() if cwd is None else Path(cwd)
+    args = _bare_requirement_args(argv) or parser().parse_args(argv); cwd = Path.cwd() if cwd is None else Path(cwd)
     {
         "plan": plan,
         "dispatch": dispatch,
         "execute": execute,
         "status": status,
-        "assess": assessment,
+        "mission-start": assessment,
         "assure": assurance,
         "resolve": resolve,
         "review": review,

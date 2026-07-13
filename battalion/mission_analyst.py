@@ -603,7 +603,7 @@ def _generate_cli_workflow_contract(mission_id: str, prompt: str) -> Dict[str, A
         ),
         _requirement(
             "R-005",
-            "Remove public assess command and document intent-first intake" if decisions["remove_assess"] else "Decide and document assess compatibility",
+            "Remove public assess command and document intent-first intake" if decisions["remove_assess"] else "Decide and document assessment command routing",
             [
                 *(
                     [
@@ -611,7 +611,7 @@ def _generate_cli_workflow_contract(mission_id: str, prompt: str) -> Dict[str, A
                         "Assessment remains internal workflow logic only.",
                     ]
                     if decisions["remove_assess"]
-                    else ["`assess` is either removed from the primary user path or retained only as a documented compatibility/advanced path."]
+                    else ["Public assessment command routing is explicitly decided and documented before implementation."]
                 ),
                 "README and CLI help present the bare invocation as the primary start path.",
                 "Documentation avoids requiring users to know Battalion's internal assessment phase.",
