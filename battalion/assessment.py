@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 import yaml
 
 from .classification import AttributeCatalogLoader, MissionClassifier, default_attribute_catalog
+from .intake import requested_markdown_artifact_paths
 from .storage import read_yaml, timestamp, write_yaml
 
 
@@ -357,16 +358,7 @@ def _title_label(value: str) -> str:
 
 
 def _requested_markdown_artifacts(text: str) -> List[str]:
-    artifacts = []
-    seen = set()
-    for match in re.finditer(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*\.md\b", text):
-        artifact = match.group(0)
-        key = artifact.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        artifacts.append(artifact)
-    return artifacts
+    return requested_markdown_artifact_paths(text)
 
 
 def _is_mission_intake_synthesis_requirement(text: str) -> bool:

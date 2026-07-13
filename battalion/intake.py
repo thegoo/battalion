@@ -54,19 +54,65 @@ class MissionIntakeSynthesizer(Protocol):
         """Return structured mission intent without changing the human text."""
 
 
-def _markdown_artifacts(requirement: str) -> List[RequestedArtifact]:
-    artifacts = []
+@dataclass(frozen=True)
+class MarkdownArtifactReference:
+    path: str
+    source_excerpt: str
+    is_example: bool = False
+
+
+EXAMPLE_ARTIFACT_MARKER = re.compile(r"\b(?:such as|for example|e\.g\.)(?:\s*,)?\s*", flags=re.IGNORECASE)
+MARKDOWN_ARTIFACT_PATTERN = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*\.md\b")
+
+
+def _sentence_start(text: str, index: int) -> int:
+    boundary = 0
+    for match in re.finditer(r"[.!?]\s+(?=[A-Z])", text[:index]):
+        if text[max(0, match.start() - 3):match.start() + 1].lower() == "e.g.":
+            continue
+        boundary = match.end()
+    return boundary
+
+
+def _is_example_artifact(requirement: str, artifact_start: int) -> bool:
+    sentence_prefix = requirement[_sentence_start(requirement, artifact_start):artifact_start]
+    return EXAMPLE_ARTIFACT_MARKER.search(sentence_prefix) is not None
+
+
+def markdown_artifact_references(requirement: str) -> List[MarkdownArtifactReference]:
+    references = []
     seen = set()
-    for match in re.finditer(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*\.md\b", requirement):
+    for match in MARKDOWN_ARTIFACT_PATTERN.finditer(requirement):
         path = match.group(0)
         key = path.lower()
         if key in seen:
             continue
         seen.add(key)
-        artifacts.append(RequestedArtifact(
+        references.append(MarkdownArtifactReference(
             path=path,
-            artifact_type="markdown_document",
             source_excerpt=requirement,
+            is_example=_is_example_artifact(requirement, match.start()),
+        ))
+    return references
+
+
+def requested_markdown_artifact_paths(requirement: str) -> List[str]:
+    return [reference.path for reference in markdown_artifact_references(requirement) if not reference.is_example]
+
+
+def example_markdown_artifact_paths(requirement: str) -> List[str]:
+    return [reference.path for reference in markdown_artifact_references(requirement) if reference.is_example]
+
+
+def _markdown_artifacts(requirement: str) -> List[RequestedArtifact]:
+    artifacts = []
+    for reference in markdown_artifact_references(requirement):
+        if reference.is_example:
+            continue
+        artifacts.append(RequestedArtifact(
+            path=reference.path,
+            artifact_type="markdown_document",
+            source_excerpt=reference.source_excerpt,
         ))
     return artifacts
 
@@ -83,11 +129,15 @@ class DeterministicMissionIntakeSynthesizer:
     def synthesize(self, requirement: str) -> IntakeSynthesis:
         if deterministic_intake_too_complex(requirement):
             raise ValueError(TOO_COMPLEX_MESSAGE)
+        traceability = {"source": "mission_prompt", "prompt_excerpt": requirement}
+        example_artifacts = example_markdown_artifact_paths(requirement)
+        if example_artifacts:
+            traceability["example_references"] = ", ".join(example_artifacts)
         return IntakeSynthesis(
             mode="deterministic",
             original_requirement=requirement,
             requested_artifacts=_markdown_artifacts(requirement),
-            traceability={"source": "mission_prompt", "prompt_excerpt": requirement},
+            traceability=traceability,
         )
 
 
@@ -99,12 +149,16 @@ class StubAiAssistedMissionIntakeSynthesizer:
     """
 
     def synthesize(self, requirement: str) -> IntakeSynthesis:
+        traceability = {"source": "mission_prompt", "prompt_excerpt": requirement}
+        example_artifacts = example_markdown_artifact_paths(requirement)
+        if example_artifacts:
+            traceability["example_references"] = ", ".join(example_artifacts)
         return IntakeSynthesis(
             mode="ai_assisted",
             provider="stub",
             original_requirement=requirement,
             requested_artifacts=_markdown_artifacts(requirement),
-            traceability={"source": "mission_prompt", "prompt_excerpt": requirement},
+            traceability=traceability,
         )
 
 

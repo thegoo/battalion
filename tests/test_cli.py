@@ -1083,6 +1083,69 @@ class BattalionCliTests(unittest.TestCase):
         self.assertIn("Create CONTRIBUTING.md documentation", statements)
         self.assertTrue(all("README-only" not in item for item in statements))
 
+    def test_example_artifacts_after_such_as_are_not_requested_deliverables(self):
+        requirement = (
+            "Fix mission intake so artifact names used as examples are not treated as requested deliverables. "
+            "When a mission asks for multiple documentation artifacts such as README.md and CONTRIBUTING.md, "
+            "assessment labels should match the structured intake."
+        )
+        self.run_cli(requirement)
+
+        ledger = read_yaml(self.ledger_path)
+        statements = [item["statement"] for item in ledger["requirements"]]
+
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], requirement)
+        self.assertEqual(ledger["intake"]["requested_artifacts"], [])
+        self.assertNotIn("Create README.md documentation", statements)
+        self.assertNotIn("Create CONTRIBUTING.md documentation", statements)
+
+    def test_example_artifacts_after_for_example_are_not_requested_deliverables(self):
+        requirement = (
+            "Fix mission intake so artifact names used as examples are not treated as requested deliverables. "
+            "For example README.md and CONTRIBUTING.md are example artifact names in a test case."
+        )
+        self.run_cli(requirement)
+
+        ledger = read_yaml(self.ledger_path)
+        statements = [item["statement"] for item in ledger["requirements"]]
+
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], requirement)
+        self.assertEqual(ledger["intake"]["requested_artifacts"], [])
+        self.assertNotIn("Create README.md documentation", statements)
+        self.assertNotIn("Create CONTRIBUTING.md documentation", statements)
+
+    def test_example_artifacts_after_eg_are_not_requested_deliverables(self):
+        requirement = (
+            "Fix mission intake so artifact names used as examples are not treated as requested deliverables. "
+            "Use examples, e.g. README.md and CONTRIBUTING.md, only as assessment fixtures."
+        )
+        self.run_cli(requirement)
+
+        ledger = read_yaml(self.ledger_path)
+        statements = [item["statement"] for item in ledger["requirements"]]
+
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], requirement)
+        self.assertEqual(ledger["intake"]["requested_artifacts"], [])
+        self.assertNotIn("Create README.md documentation", statements)
+        self.assertNotIn("Create CONTRIBUTING.md documentation", statements)
+
+    def test_dogfood_style_example_clause_artifacts_are_not_requested_deliverables(self):
+        requirement = (
+            "Fix mission intake so artifact names used as examples are not treated as requested deliverables. "
+            "For example, in a requirement like 'When a mission asks for multiple documentation artifacts such as "
+            "README.md and CONTRIBUTING.md, assessment labels should match the structured intake,' README.md and "
+            "CONTRIBUTING.md are example artifacts for a test case, not files to create."
+        )
+        self.run_cli(requirement)
+
+        ledger = read_yaml(self.ledger_path)
+        statements = [item["statement"] for item in ledger["requirements"]]
+
+        self.assertEqual(read_yaml(self.workspace / "mission.yaml")["mission_prompt"], requirement)
+        self.assertEqual(ledger["intake"]["requested_artifacts"], [])
+        self.assertNotIn("Create README.md documentation", statements)
+        self.assertNotIn("Create CONTRIBUTING.md documentation", statements)
+
     def test_compound_docs_questions_are_not_readme_only(self):
         self.run_cli("Create README.md and CONTRIBUTING.md")
 
